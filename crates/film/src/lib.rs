@@ -5,6 +5,8 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+#[allow(dead_code)] // used by `look` from Task 5 on
+mod basis;
 mod cie_table;
 mod profile;
 pub mod spectrum;
