@@ -8,6 +8,8 @@
 #[allow(dead_code)] // used by `look` from Task 5 on
 mod basis;
 mod cie_table;
+#[allow(dead_code)] // used by `look` from Task 5 on
+mod grid;
 mod profile;
 pub mod spectrum;
 mod stocks;
