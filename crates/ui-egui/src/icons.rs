@@ -1137,4 +1137,98 @@ mod tests {
         let png = lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(&image), &lightcraft_codecs::EncodeMeta::default()).unwrap();
         std::fs::write(path, png).unwrap();
     }
+
+    /// `ICON_SVG_DIR=dir cargo test -p lightcraft-ui-egui --lib icon_svgs -- --ignored` writes one SVG per icon
+    /// (viewBox 0 0 20 20, our design grid) for review in a design tool. Line-end dots are dropped: SVG round caps do that.
+    #[test]
+    #[ignore]
+    fn icon_svgs() {
+        use egui::epaint::Shape as S;
+        let Ok(dir) = std::env::var("ICON_SVG_DIR") else { return };
+        let _ = std::fs::create_dir_all(&dir);
+        let f = |v: f32| format!("{:.3}", v).trim_end_matches('0').trim_end_matches('.').to_string();
+        for icon in Icon::ALL {
+            let mut view = crate::headless::HeadlessView::new();
+            // 2× so `Pen::line` adds its end dots, as it does on screen; they are filtered below.
+            let raw = crate::headless::HeadlessView::raw_input(vec2(20.0, 20.0), 2.0, 0.0, vec![]);
+            view.run(raw, |ui| paint(ui.painter(), Rect::from_min_size(pos2(0.0, 0.0), vec2(20.0, 20.0)), *icon, Color32::WHITE));
+            let shapes = view.painted_shapes();
+            let mut ends: Vec<Pos2> = Vec::new();
+            for s in &shapes {
+                if let S::Path(p) = s
+                    && !p.closed
+                    && !p.points.is_empty()
+                {
+                    ends.push(p.points[0]);
+                    ends.push(p.points[p.points.len() - 1]);
+                }
+            }
+            let mut out = String::from(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 20 20\" fill=\"none\" stroke=\"#E6E6E6\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\">\n",
+            );
+            for s in &shapes {
+                match s {
+                    S::Circle(c) => {
+                        let is_end_dot = c.fill != Color32::TRANSPARENT
+                            && c.stroke.is_empty()
+                            && ends.iter().any(|e| e.distance(c.center) < 0.05)
+                            && (c.radius - 0.75).abs() < 0.01;
+                        if is_end_dot {
+                            continue;
+                        }
+                        if c.fill != Color32::TRANSPARENT {
+                            out += &format!(
+                                "  <circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"#E6E6E6\" stroke=\"none\"/>\n",
+                                f(c.center.x),
+                                f(c.center.y),
+                                f(c.radius)
+                            );
+                        } else {
+                            out += &format!("  <circle cx=\"{}\" cy=\"{}\" r=\"{}\"/>\n", f(c.center.x), f(c.center.y), f(c.radius));
+                        }
+                    }
+                    S::Rect(r) => {
+                        let fill = if r.fill != Color32::TRANSPARENT && r.stroke.is_empty() { " fill=\"#E6E6E6\" stroke=\"none\"" } else { "" };
+                        out += &format!(
+                            "  <rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{}\"{}/>\n",
+                            f(r.rect.min.x),
+                            f(r.rect.min.y),
+                            f(r.rect.width()),
+                            f(r.rect.height()),
+                            f(r.corner_radius.nw as f32),
+                            fill
+                        );
+                    }
+                    S::LineSegment { points, .. } => {
+                        out += &format!("  <path d=\"M{} {} L{} {}\"/>\n", f(points[0].x), f(points[0].y), f(points[1].x), f(points[1].y));
+                    }
+                    S::Path(p) => {
+                        let mut d = String::new();
+                        for (i, pt) in p.points.iter().enumerate() {
+                            d += &format!("{}{} {}", if i == 0 { "M" } else { " L" }, f(pt.x), f(pt.y));
+                        }
+                        if p.closed {
+                            d += " Z";
+                        }
+                        if p.fill != Color32::TRANSPARENT && p.stroke.is_empty() {
+                            out += &format!("  <path d=\"{d}\" fill=\"#E6E6E6\" stroke=\"none\"/>\n");
+                        } else {
+                            out += &format!("  <path d=\"{d}\"/>\n");
+                        }
+                    }
+                    S::Mesh(m) => {
+                        // the star fan: vertex 0 is the centre, the rest the polygon
+                        let mut d = String::new();
+                        for (i, v) in m.vertices.iter().skip(1).enumerate() {
+                            d += &format!("{}{} {}", if i == 0 { "M" } else { " L" }, f(v.pos.x), f(v.pos.y));
+                        }
+                        out += &format!("  <path d=\"{d} Z\" fill=\"#E6E6E6\" stroke=\"none\"/>\n");
+                    }
+                    other => panic!("{icon:?}: unexpected shape {other:?}"),
+                }
+            }
+            out += "</svg>\n";
+            std::fs::write(format!("{dir}/{icon:?}.svg"), out).unwrap();
+        }
+    }
 }
