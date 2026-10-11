@@ -3276,6 +3276,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lightcraft-film"
+version = "0.6.0"
+dependencies = [
+ "lightcraft-color",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "lightcraft-geocode"
 version = "0.6.0"
 dependencies = [

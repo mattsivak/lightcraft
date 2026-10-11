@@ -22,6 +22,11 @@ Foundation project licensed under the Apache License 2.0, and from the CIE 1931 
 functions it ships (CIE, CC-BY-4.0). The matrices were fitted by the LightCraft contributors
 (2026) with tools/spectral_camera_table.py. See assets/ATTRIBUTION.md.
 
+crates/film/src/cie_table.rs (lightcraft-film) holds the CIE 1931 2° colour-matching functions as
+shipped in rawtoaces-data (CIE, CC-BY-4.0) and the CIE daylight basis functions S0, S1, S2 (CIE 15:2004)
+as shipped in colour-science (BSD-3-Clause), generated with tools/film_cie_table.py. See
+assets/ATTRIBUTION.md.
+
 crates/inpaint (lightcraft-inpaint) ports the inpainting (PatchMatch completion) and Poisson membrane
 fill code of PhotoCraft (https://github.com/storytold/photocraft, crates/algo/src/inpaint.rs and
 poisson.rs), Copyright the PhotoCraft contributors, licensed under the MIT License or the Apache

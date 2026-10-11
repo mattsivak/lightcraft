@@ -18,6 +18,7 @@ lightcraft-geom = { path = "crates/geom" }
 lightcraft-faces = { path = "crates/faces" }
 lightcraft-sysmem = { path = "crates/sysmem" }
 lightcraft-color = { path = "crates/color" }
+lightcraft-film = { path = "crates/film" }
 lightcraft-raster = { path = "crates/raster" }
 lightcraft-tiff = { path = "crates/tiff" }
 lightcraft-raw = { path = "crates/raw" }
@@ -150,6 +151,7 @@ opt-level = "s"
 lightcraft-pipeline = { opt-level = 3 }
 lightcraft-raster = { opt-level = 3 }
 lightcraft-color = { opt-level = 3 }
+lightcraft-film = { opt-level = 3 }
 lightcraft-develop = { opt-level = 3 }
 lightcraft-geom = { opt-level = 3 }
 lightcraft-raw = { opt-level = 3 }
