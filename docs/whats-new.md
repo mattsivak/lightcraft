@@ -2,6 +2,15 @@
 
 ## 2026-10-11
 
+### Film simulation
+- Film simulation: Kodak Portra 400, Ektar 100, Gold 200 and Fujifilm Velvia 100, printed on Portra Endura
+  (Edit ▸ Film) (issue #988). Pick a stock and the photo is exposed on that film, printed on paper and scanned;
+  Velvia, a slide film, is viewed on a light box instead. Film Exposure, and for negatives Print Exposure and
+  Magenta / Yellow filters, fine-tune the print; the film and paper set the contrast, so Contrast, Whites and
+  Blacks rest while film is on. Agents use `develop.film` and `develop.filmStocks`. The stock data come from
+  [spektrafilm](https://github.com/andreavolpato/spektrafilm) by Andrea Volpato (CC BY-SA 4.0), credited in
+  Help ▸ About ▸ Data; the film model is LightCraft's own. Photos with film on render on the CPU for now.
+
 ### JPEG XL export
 - Export as JPEG XL (issue #247): Format ▸ JPEG XL in the Export dialog, `format: "jxl"` for agents and the CLI
   (`render in.raw -o out.jxl`). Quality as for JPEG, or Lossless; Effort (Fast / Normal) trades time for a

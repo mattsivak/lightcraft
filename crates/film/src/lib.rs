@@ -17,6 +17,15 @@ pub use look::{Look, LookParams, look};
 pub use profile::{Curve, Kind, Stock};
 pub use stocks::{DEFAULT_PAPER, StockInfo, films, papers, stock};
 
+/// Credits for the data compiled into this crate (Help ▸ About ▸ Data). Required by the stock data's licence.
+pub const CREDITS: &str = "Film simulation stock data: spektrafilm by Andrea Volpato \
+(https://github.com/andreavolpato/spektrafilm), licensed CC BY-SA 4.0 \
+(https://creativecommons.org/licenses/by-sa/4.0/), unmodified. Kodak Portra 400, Ektar 100, Gold 200, \
+Fujifilm Velvia 100 and Kodak Portra Endura, processed by the author from Kodak and Fujifilm data sheets. \
+LightCraft's film model is its own; it uses no spektrafilm code.\n\n\
+CIE 1931 colour-matching functions (CIE, CC-BY-4.0, via rawtoaces-data) and CIE daylight basis functions \
+(CIE 15:2004, via colour-science, BSD-3-Clause).";
+
 /// Why a film look can't be built.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FilmError {
@@ -42,3 +51,13 @@ impl std::fmt::Display for FilmError {
 }
 
 impl std::error::Error for FilmError {}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn credits_carry_the_cc_by_sa_attribution() {
+        for must in ["spektrafilm", "Andrea Volpato", "https://github.com/andreavolpato/spektrafilm", "CC BY-SA 4.0", "unmodified"] {
+            assert!(super::CREDITS.contains(must), "{must}");
+        }
+    }
+}

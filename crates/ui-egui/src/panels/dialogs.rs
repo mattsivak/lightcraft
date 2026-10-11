@@ -165,8 +165,9 @@ fn watermark_preview(
     crate::widgets::register(ui.ctx(), "image:exportWatermarkPreview", r.rect);
 }
 
-/// About dialog tabs: (widget id suffix, label). The credits come from `crate::credits`.
-pub const ABOUT_TABS: &[(&str, &str)] = &[("about", "About"), ("contributors", "Contributors"), ("models", "Models")];
+/// About dialog tabs: (widget id suffix, label). The credits come from `crate::credits`, the Data tab from
+/// `lightcraft_film::CREDITS`.
+pub const ABOUT_TABS: &[(&str, &str)] = &[("about", "About"), ("contributors", "Contributors"), ("models", "Models"), ("data", "Data")];
 
 /// Help ▸ What's New (docs/whats-new.md).
 pub const WHATS_NEW: &str = include_str!("../../../../docs/whats-new.md");
@@ -1136,6 +1137,14 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context) {
                     match tab {
                         1 => crate::credits::contributors_ui(app, ui),
                         2 => crate::credits::models_ui(ui),
+                        // third-party data compiled in (film stocks, CIE tables); the text stays English: a licence notice
+                        3 => {
+                            ui.label(egui::RichText::new(crate::i18n::tr("Third-party data")).font(t.semibold(16.0)).color(t.text));
+                            ui.add_space(6.0);
+                            egui::ScrollArea::vertical().id_salt("about_data_scroll").max_height(360.0).show(ui, |ui| {
+                                ui.label(lightcraft_film::CREDITS);
+                            });
+                        }
                         _ => {
                             ui.label(egui::RichText::new("LightCraft").font(t.semibold(20.0)).color(t.text));
                             ui.label(crate::i18n::tr_format!("Version {} — a clean-room, pure-Rust photo library and raw developer.", env!("CARGO_PKG_VERSION")));

@@ -3423,7 +3423,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Help ▸ About: the About, Contributors and Models tabs switch and paint (credits are
+    /// Help ▸ About: the About, Contributors, Models and Data tabs switch and paint (credits are
     /// compiled in).
     #[test]
     fn about_dialog_tabs_show_the_credits() {
