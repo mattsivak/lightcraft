@@ -34,6 +34,9 @@ fn film_command_refuses_unknown_and_wrong_kind_ids() {
         json!({"paper": "kodak_portra_400"}),
         json!({"stock": 7}),
         json!({"enabled": true, "paper": "nope"}),
+        // a non-boolean `enabled` is refused, not read as "toggle" (which would turn film on here)
+        json!({"enabled": "false"}),
+        json!({"enabled": 0, "stock": "kodak_ektar_100"}),
     ] {
         let e = s.execute("develop.film", &p).unwrap_err().to_string();
         assert!(e.contains("develop.film"), "{p}: {e}");

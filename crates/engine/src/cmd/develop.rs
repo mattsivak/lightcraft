@@ -737,7 +737,11 @@ pub fn specs() -> Vec<CommandSpec> {
             |s, p| {
                 let id = active(s, "develop.film")?;
                 let cur = s.develop_of(id).map(|d| d.film.clone()).unwrap_or_default();
-                let enabled = bool_or(p, "enabled", !cur.enabled);
+                // a non-boolean `enabled` (e.g. "false") is refused rather than read as a toggle
+                let enabled = match p.get("enabled") {
+                    None => !cur.enabled,
+                    Some(v) => v.as_bool().ok_or_else(|| bad("develop.film", "`enabled` must be true or false"))?,
+                };
                 let stock = film_id_param(p, "stock", &lightcraft_film::films(), false)?;
                 let paper = film_id_param(p, "paper", &lightcraft_film::papers(), true)?;
                 let label = if enabled { "Film Simulation On" } else { "Film Simulation Off" };
