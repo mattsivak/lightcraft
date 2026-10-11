@@ -3226,6 +3226,7 @@ dependencies = [
  "lightcraft-develop",
  "lightcraft-faces",
  "lightcraft-fetch",
+ "lightcraft-film",
  "lightcraft-geocode",
  "lightcraft-geom",
  "lightcraft-gpu",
