@@ -28,6 +28,7 @@ pub enum SettingsGroup {
     Effects,
     Vignette,
     Grain,
+    Film,
     Detail,
     Optics,
     Geometry,
@@ -40,7 +41,7 @@ pub enum SettingsGroup {
 }
 
 impl SettingsGroup {
-    pub const ALL: [SettingsGroup; 20] = [
+    pub const ALL: [SettingsGroup; 21] = [
         SettingsGroup::Profile,
         SettingsGroup::Treatment,
         SettingsGroup::WhiteBalance,
@@ -52,6 +53,7 @@ impl SettingsGroup {
         SettingsGroup::Effects,
         SettingsGroup::Vignette,
         SettingsGroup::Grain,
+        SettingsGroup::Film,
         SettingsGroup::Detail,
         SettingsGroup::Optics,
         SettingsGroup::Geometry,
@@ -84,6 +86,7 @@ impl SettingsGroup {
             SettingsGroup::Effects => "Effects",
             SettingsGroup::Vignette => "Vignette",
             SettingsGroup::Grain => "Grain",
+            SettingsGroup::Film => "Film Simulation",
             SettingsGroup::Detail => "Detail",
             SettingsGroup::Optics => "Optics",
             SettingsGroup::Geometry => "Geometry",
@@ -110,6 +113,7 @@ impl SettingsGroup {
             SettingsGroup::Effects => &["effects"],
             SettingsGroup::Vignette => &["vignette"],
             SettingsGroup::Grain => &["grain"],
+            SettingsGroup::Film => &["film"],
             SettingsGroup::Detail => &["detail", "enhance"],
             SettingsGroup::Optics => &["optics"],
             SettingsGroup::Geometry => &["geometry"],
@@ -131,6 +135,10 @@ pub fn extract_groups(s: &DevelopSettings, groups: &[SettingsGroup]) -> Value {
         for k in g.keys() {
             if let Some(v) = full.get(*k) {
                 out.insert((*k).to_string(), v.clone());
+            } else if *k == "film" {
+                // film is omitted from the JSON while default: copy that default explicitly, so pasting the Film
+                // group onto a photo with film on turns it off
+                out.insert((*k).to_string(), serde_json::to_value(crate::Film::default()).unwrap_or(Value::Null));
             }
         }
     }
@@ -185,7 +193,17 @@ fn scale_patch(base: &Value, patch: &Value, t: f64) -> Value {
 /// Apply a partial settings object with an amount (1.0 = 100 %). Out-of-range values are clamped
 /// through the control specs.
 pub fn apply_partial(s: &DevelopSettings, partial: &Value, amount: f64) -> DevelopSettings {
-    let base = s.to_json();
+    let mut base = s.to_json();
+    // fields omitted while default (`hdr`, `film`) still need a base to interpolate from: without one a preset
+    // at an amount below 50 % would set them to `null`, which fails to deserialize and drops the whole preset
+    if let Some(o) = base.as_object_mut() {
+        if !o.contains_key("hdr") {
+            o.insert("hdr".into(), serde_json::to_value(crate::Hdr::default()).unwrap_or(Value::Null));
+        }
+        if !o.contains_key("film") {
+            o.insert("film".into(), serde_json::to_value(crate::Film::default()).unwrap_or(Value::Null));
+        }
+    }
     let patch = if (amount - 1.0).abs() < 1e-9 { partial.clone() } else { scale_patch(&base, partial, amount) };
     // (a white balance without a scale keeps its old meaning: `DevelopSettings::merged`)
     let mut out = s.merged(&patch).unwrap_or_else(|_| s.clone());

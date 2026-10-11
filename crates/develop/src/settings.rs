@@ -127,6 +127,9 @@ pub struct DevelopSettings {
     pub effects: Effects,
     pub vignette: Vignette,
     pub grain: Grain,
+    /// Film simulation; omitted while default (see [`Film`]).
+    #[serde(skip_serializing_if = "Film::is_default")]
+    pub film: Film,
     pub detail: Detail,
     pub optics: Optics,
     pub geometry: Geometry,
@@ -162,6 +165,7 @@ impl Default for DevelopSettings {
             effects: Effects::default(),
             vignette: Vignette::default(),
             grain: Grain::default(),
+            film: Film::default(),
             detail: Detail::default(),
             optics: Optics::default(),
             geometry: Geometry::default(),
@@ -607,6 +611,45 @@ pub struct Grain {
 impl Default for Grain {
     fn default() -> Self {
         Self { amount: 0.0, size: 25.0, roughness: 50.0, seed: 0 }
+    }
+}
+
+/// Film simulation (issue #988): the photo exposed on a film stock, printed and scanned, in place of the tone map
+/// (`lightcraft_film`). Not written while it is the default, so settings without it keep their JSON and `hash64`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Film {
+    pub enabled: bool,
+    /// Film stock id (`lightcraft_film::films`), e.g. `kodak_portra_400`.
+    pub stock: String,
+    /// Print paper id for a negative; empty = the stock's own paper.
+    pub paper: String,
+    /// Film exposure, EV −3..3 (after Light ▸ Exposure).
+    pub exposure: f64,
+    /// Print exposure, EV −2..2 (more is a darker print).
+    pub print_exposure: f64,
+    /// Enlarger filtration on top of the automatic neutral balance, CC −100..100.
+    pub print_magenta: f64,
+    pub print_yellow: f64,
+}
+
+impl Default for Film {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            stock: "kodak_portra_400".into(),
+            paper: String::new(),
+            exposure: 0.0,
+            print_exposure: 0.0,
+            print_magenta: 0.0,
+            print_yellow: 0.0,
+        }
+    }
+}
+
+impl Film {
+    pub fn is_default(&self) -> bool {
+        *self == Film::default()
     }
 }
 
@@ -1176,5 +1219,58 @@ impl DevelopSettings {
         s.light.whites = add(s.light.whites, h.sdr_whites);
         s.effects.clarity = add(s.effects.clarity, h.sdr_clarity);
         std::borrow::Cow::Owned(s)
+    }
+}
+
+#[cfg(test)]
+mod film_tests {
+    use crate::{DevelopSettings, Film, SettingsGroup, apply_partial, controls, extract_groups};
+
+    #[test]
+    fn settings_without_film_keep_their_json() {
+        let j = DevelopSettings::default().to_json();
+        assert!(j.get("film").is_none(), "{j}");
+        // an edit saved before film simulation reads back with film off
+        let old = DevelopSettings::from_json(&j).unwrap();
+        assert!(!old.film.enabled && old.film.is_default());
+    }
+
+    #[test]
+    fn film_settings_round_trip() {
+        let s = DevelopSettings {
+            film: Film { enabled: true, stock: "kodak_ektar_100".into(), print_magenta: 12.0, ..Film::default() },
+            ..DevelopSettings::default()
+        };
+        let back = DevelopSettings::from_json(&s.to_json()).unwrap();
+        assert_eq!(back.film, s.film);
+    }
+
+    #[test]
+    fn film_controls_clamp() {
+        let mut s = DevelopSettings::default();
+        assert!(controls::set(&mut s, "film.printMagenta", 500.0));
+        assert_eq!(s.film.print_magenta, 100.0);
+        assert!(controls::set(&mut s, "film.exposure", -9.0));
+        assert_eq!(s.film.exposure, -3.0);
+        assert!(controls::set(&mut s, "film.printExposure", 0.5));
+        assert!(controls::set(&mut s, "film.printYellow", -5.0));
+    }
+
+    #[test]
+    fn copying_the_film_group_without_film_turns_film_off() {
+        // the source's film is default (so not in its JSON); pasting the Film group must still reset the target
+        let src = DevelopSettings::default();
+        let dst = DevelopSettings { film: Film { enabled: true, stock: "kodak_gold_200".into(), ..Film::default() }, ..DevelopSettings::default() };
+        let partial = extract_groups(&src, &[SettingsGroup::Film]);
+        assert!(partial.get("film").is_some(), "{partial}");
+        assert!(apply_partial(&dst, &partial, 1.0).film.is_default());
+        // and below 50 % the (default) base wins, not a `null` that drops the preset
+        let mut on = DevelopSettings { film: Film { enabled: true, print_magenta: 40.0, ..Film::default() }, ..DevelopSettings::default() };
+        on.light.exposure = 1.0;
+        let p = extract_groups(&on, &[SettingsGroup::Film, SettingsGroup::Light]);
+        let out = apply_partial(&DevelopSettings::default(), &p, 0.25);
+        assert!((out.light.exposure - 0.25).abs() < 1e-9 && !out.film.enabled && (out.film.print_magenta - 10.0).abs() < 1e-9);
+        // other groups don't drag film along
+        assert!(extract_groups(&src, &[SettingsGroup::Grain]).get("film").is_none());
     }
 }
