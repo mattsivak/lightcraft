@@ -1,4 +1,4 @@
-//! The Edit panel: histogram, Auto/B&W, profile, and the Light / Color / Effects / Detail / Optics
+//! The Edit panel: histogram, Auto/B&W, profile, and the Light / Color / Effects / Film / Detail / Optics
 //! sections, built from the engine's control specs.
 
 use egui::epaint::{Mesh, Vertex};
@@ -186,8 +186,10 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
 
     section(app, ui, &d, "light", "Light", |app, ui, d| {
         hdr_row(app, ui, d);
+        // with film simulation on, the film and paper curves stand in for the tone map's Contrast, Whites and Blacks
+        let film = d.film.enabled && d.section_enabled("film");
         for c in ["light.exposure", "light.contrast", "light.highlights", "light.shadows", "light.whites", "light.blacks"] {
-            control(app, ui, d, c, true);
+            control(app, ui, d, c, !(film && matches!(c, "light.contrast" | "light.whites" | "light.blacks")));
         }
         ui.add_space(6.0);
         if d.hdr.enabled {
@@ -315,6 +317,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         }
         ui.add_space(8.0);
     });
+    section(app, ui, &d, "film", "Film", film_section);
     section(app, ui, &d, "detail", "Detail", |app, ui, d| {
         for c in ["detail.sharpenAmount", "detail.sharpenRadius", "detail.sharpenDetail", "detail.sharpenMasking"] {
             control(app, ui, d, c, c == "detail.sharpenAmount" || d.detail.sharpen_amount > 0.0);
@@ -490,6 +493,68 @@ fn profile_menu(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings)
     if let Some(id) = pick.0 {
         let _ = app.run("develop.profile", json!({"id": id}));
     }
+}
+
+/// Edit ▸ Film (issue #988; beyond Lightroom): the stock, a negative's print paper and the film and print sliders.
+/// The stocks come from `lightcraft-film`; choices go through `develop.film`.
+fn film_section(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings) {
+    let t = Tokens::get(ui.ctx());
+    let films = lightcraft_film::films();
+    let none = crate::i18n::tr("None");
+    let own_paper = crate::i18n::tr("Stock's own paper");
+    let shown = if d.film.enabled { films.iter().find(|f| f.id == d.film.stock).map_or(d.film.stock.as_str(), |f| f.name) } else { none };
+    let negative = d.film.enabled && films.iter().any(|f| f.id == d.film.stock && f.kind == lightcraft_film::Kind::Negative);
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 4, bottom: 4 }).show(ui, |ui| {
+        // the combos fill what the labels leave, so the section never widens the panel
+        let combo_w = (ui.available_width() - 56.0).max(80.0);
+        egui::Grid::new("filmChoices").num_columns(2).spacing(vec2(10.0, 6.0)).show(ui, |ui| {
+            ui.label(RichText::new(crate::i18n::tr("Stock")).font(t.font(13.0)).color(t.text_dim));
+            let combo = egui::ComboBox::from_id_salt("combo:filmStock").width(combo_w).selected_text(shown).show_ui(ui, |ui| {
+                if ui.selectable_label(!d.film.enabled, none).clicked() {
+                    let _ = app.run("develop.film", json!({"enabled": false}));
+                }
+                for f in &films {
+                    if ui.selectable_label(d.film.enabled && d.film.stock == f.id, f.name).clicked() {
+                        let _ = app.run("develop.film", json!({"enabled": true, "stock": f.id}));
+                    }
+                }
+            });
+            register(ui.ctx(), "combo:filmStock", combo.response.rect);
+            ui.end_row();
+            if negative {
+                let papers = lightcraft_film::papers();
+                let paper = papers.iter().find(|p| p.id == d.film.paper).map_or(own_paper, |p| p.name);
+                ui.label(RichText::new(crate::i18n::tr("Paper")).font(t.font(13.0)).color(t.text_dim));
+                let combo = egui::ComboBox::from_id_salt("combo:filmPaper").width(combo_w).selected_text(paper).show_ui(ui, |ui| {
+                    if ui.selectable_label(d.film.paper.is_empty(), own_paper).clicked() {
+                        let _ = app.run("develop.film", json!({"enabled": true, "paper": ""}));
+                    }
+                    for p in &papers {
+                        if ui.selectable_label(d.film.paper == p.id, p.name).clicked() {
+                            let _ = app.run("develop.film", json!({"enabled": true, "paper": p.id}));
+                        }
+                    }
+                });
+                register(ui.ctx(), "combo:filmPaper", combo.response.rect);
+                ui.end_row();
+            }
+        });
+    });
+    if d.film.enabled {
+        control(app, ui, d, "film.exposure", true);
+        if negative {
+            sub_title(ui, "Print");
+            control(app, ui, d, "film.printExposure", true);
+            control(app, ui, d, "film.printMagenta", true);
+            control(app, ui, d, "film.printYellow", true);
+        }
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 2, bottom: 2 }).show(ui, |ui| {
+            ui.label(
+                RichText::new(crate::i18n::tr("Contrast, Whites and Blacks are set by the film and paper.")).font(t.font(12.0)).color(t.text_dim),
+            );
+        });
+    }
+    ui.add_space(8.0);
 }
 
 pub fn sub_title(ui: &mut egui::Ui, title: &str) {
