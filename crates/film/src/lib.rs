@@ -6,7 +6,12 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod cie_table;
+mod profile;
 pub mod spectrum;
+mod stocks;
+
+pub use profile::{Curve, Kind, Stock};
+pub use stocks::{DEFAULT_PAPER, StockInfo, films, papers, stock};
 
 /// Why a film look can't be built.
 #[derive(Clone, Debug, PartialEq, Eq)]

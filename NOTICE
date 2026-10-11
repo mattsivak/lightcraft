@@ -27,6 +27,12 @@ shipped in rawtoaces-data (CIE, CC-BY-4.0) and the CIE daylight basis functions 
 as shipped in colour-science (BSD-3-Clause), generated with tools/film_cie_table.py. See
 assets/ATTRIBUTION.md.
 
+assets/film/spektrafilm/ holds film and print-paper stock profiles from spektrafilm by Andrea Volpato
+(https://github.com/andreavolpato/spektrafilm), unmodified, licensed under CC BY-SA 4.0 (see
+assets/film/spektrafilm/SPEKTRAFILM_LICENSE.txt). They are compiled into lightcraft-film. This licence
+covers those data only; LightCraft's own code, including its film model, is MIT OR Apache-2.0 and
+uses no spektrafilm code.
+
 crates/inpaint (lightcraft-inpaint) ports the inpainting (PatchMatch completion) and Poisson membrane
 fill code of PhotoCraft (https://github.com/storytold/photocraft, crates/algo/src/inpaint.rs and
 poisson.rs), Copyright the PhotoCraft contributors, licensed under the MIT License or the Apache
