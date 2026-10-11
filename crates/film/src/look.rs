@@ -124,9 +124,13 @@ fn cached(film: &str, paper: &str, make: impl FnOnce() -> Result<Baked, FilmErro
     if let Some(b) = hit {
         return Ok(b);
     }
-    // baked outside the lock: two threads may bake the same pair once each, never block each other
+    // baked outside the lock: two threads may bake the same pair once each, never block each other; the first to
+    // finish wins and the other drops its copy, so every look of a pair shares one bake
     let b = Arc::new(make()?);
     let mut c = BAKED.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((_, won)) = c.iter().find(|(k, _)| *k == key) {
+        return Ok(won.clone());
+    }
     if c.len() >= CACHE {
         c.remove(0);
     }
@@ -342,6 +346,30 @@ mod tests {
         let a = look(&params("kodak_ektar_100")).unwrap();
         let b = look(&LookParams { print_exposure_ev: 0.3, print_yellow: -10.0, exposure_ev: 0.5, ..params("kodak_ektar_100") }).unwrap();
         assert!(Arc::ptr_eq(&a.baked, &b.baked));
+    }
+
+    fn dummy_baked() -> Result<Baked, FilmError> {
+        let t = || Table1::from_fn(0.0, 1.0, 2, |x| x);
+        Ok(Baked {
+            to_exposure: [[1.0; 3]; 3],
+            film_curves: [t(), t(), t()],
+            path: Path::Direct { view: Grid3::bake(2, [0.0; 3], [1.0; 3], |p| p)? },
+        })
+    }
+
+    #[test]
+    fn a_pair_baked_twice_at_once_keeps_one_cache_entry() {
+        // another thread finishes baking the same pair while this one bakes: both must end up with the entry that
+        // won, so later looks share it
+        let mut inner = None;
+        let outer = cached("test_race_film", "test_race_paper", || {
+            inner = Some(cached("test_race_film", "test_race_paper", dummy_baked).unwrap());
+            dummy_baked()
+        })
+        .unwrap();
+        let later = cached("test_race_film", "test_race_paper", dummy_baked).unwrap();
+        assert!(Arc::ptr_eq(&outer, &later));
+        assert!(Arc::ptr_eq(&inner.unwrap(), &later));
     }
 
     #[test]
