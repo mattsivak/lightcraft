@@ -83,7 +83,7 @@ impl DevelopSettings {
     /// The settings as rendered: an Edit-panel section whose eye is off contributes nothing (issue
     /// #316). Light (with its tone curve), Color (white balance, presence, the mixers, colour grading
     /// and point colour) and Detail are reset to their defaults here; Effects, Optics, Geometry and
-    /// Calibration the pipeline switches off where it applies them. Borrowed when every section is on.
+    /// Calibration (and Film) the pipeline switches off where it applies them. Borrowed when every section is on.
     pub fn effective(&self) -> std::borrow::Cow<'_, DevelopSettings> {
         let off = |section: &str| !self.section_enabled(section);
         if !(off("light") || off("color") || off("detail")) {

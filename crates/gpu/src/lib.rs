@@ -454,11 +454,12 @@ pub fn try_render(
         let effective = s.effective();
         let s: &DevelopSettings = &effective;
         // the kernel writes 8-bit output: high-bit-depth exports (and soft proofs) render on the CPU
-        // Visualize HDR needs the float HDR render: CPU too
+        // Visualize HDR needs the float HDR render: CPU too; so does film simulation (no GPU stage yet, issue #988)
         if !enabled()
             || req.depth != lightcraft_pipeline::OutputDepth::U8
             || req.proof.is_some()
             || req.overlay == lightcraft_pipeline::Overlay::HdrRange
+            || lightcraft_pipeline::finish::film_look(s).is_some()
         {
             return Err(Fallback::NotTried);
         }
