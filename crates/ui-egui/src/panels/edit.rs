@@ -509,7 +509,8 @@ fn film_section(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings)
         let combo_w = (ui.available_width() - 56.0).max(80.0);
         egui::Grid::new("filmChoices").num_columns(2).spacing(vec2(10.0, 6.0)).show(ui, |ui| {
             ui.label(RichText::new(crate::i18n::tr("Stock")).font(t.font(13.0)).color(t.text_dim));
-            let combo = egui::ComboBox::from_id_salt("combo:filmStock").width(combo_w).selected_text(shown).show_ui(ui, |ui| {
+            // truncated: a long name must never widen the section (the sliders below size to it)
+            let combo = egui::ComboBox::from_id_salt("combo:filmStock").width(combo_w).truncate().selected_text(shown).show_ui(ui, |ui| {
                 if ui.selectable_label(!d.film.enabled, none).clicked() {
                     let _ = app.run("develop.film", json!({"enabled": false}));
                 }
@@ -520,12 +521,13 @@ fn film_section(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings)
                 }
             });
             register(ui.ctx(), "combo:filmStock", combo.response.rect);
+            combo.response.on_hover_text(shown);
             ui.end_row();
             if negative {
                 let papers = lightcraft_film::papers();
                 let paper = papers.iter().find(|p| p.id == d.film.paper).map_or(own_paper, |p| p.name);
                 ui.label(RichText::new(crate::i18n::tr("Paper")).font(t.font(13.0)).color(t.text_dim));
-                let combo = egui::ComboBox::from_id_salt("combo:filmPaper").width(combo_w).selected_text(paper).show_ui(ui, |ui| {
+                let combo = egui::ComboBox::from_id_salt("combo:filmPaper").width(combo_w).truncate().selected_text(paper).show_ui(ui, |ui| {
                     if ui.selectable_label(d.film.paper.is_empty(), own_paper).clicked() {
                         let _ = app.run("develop.film", json!({"enabled": true, "paper": ""}));
                     }
@@ -536,6 +538,7 @@ fn film_section(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings)
                     }
                 });
                 register(ui.ctx(), "combo:filmPaper", combo.response.rect);
+                combo.response.on_hover_text(paper);
                 ui.end_row();
             }
         });
