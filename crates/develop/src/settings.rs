@@ -626,7 +626,8 @@ pub enum FilmOutput {
 }
 
 /// Film simulation (issue #988): the photo exposed on a film stock, then lab-scanned or printed, in place of the tone
-/// map (`lightcraft_film`); Light ▸ Contrast, Whites and Blacks shape the light before the film. Not written while it
+/// map (`lightcraft_film`); Light ▸ Contrast, Whites and Blacks then act on the scan or print (paper grade, white and
+/// black points). Not written while it
 /// is the default, so settings without it keep their JSON and `hash64`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -638,11 +639,12 @@ pub struct Film {
     pub output: FilmOutput,
     /// Print paper id for a printed negative; empty = the stock's own paper.
     pub paper: String,
-    /// Film exposure, EV −3..3 (after Light ▸ Exposure).
+    /// Push (+) / pull (−) development, stops −3..3: contrast up or down around mid grey, brightness kept (the
+    /// control id stays `film.exposure`).
     pub exposure: f64,
-    /// Print exposure, EV −2..2 (more is a darker print).
+    /// Print exposure, EV −1..1 (more is a darker print).
     pub print_exposure: f64,
-    /// Enlarger filtration on top of the automatic neutral balance, CC −100..100.
+    /// Enlarger filtration on top of the automatic neutral balance, CC −30..30; brightness is compensated.
     pub print_magenta: f64,
     pub print_yellow: f64,
 }
@@ -1267,7 +1269,9 @@ mod film_tests {
     fn film_controls_clamp() {
         let mut s = DevelopSettings::default();
         assert!(controls::set(&mut s, "film.printMagenta", 500.0));
-        assert_eq!(s.film.print_magenta, 100.0);
+        assert_eq!(s.film.print_magenta, 30.0);
+        assert!(controls::set(&mut s, "film.printExposure", -5.0));
+        assert_eq!(s.film.print_exposure, -1.0);
         assert!(controls::set(&mut s, "film.exposure", -9.0));
         assert_eq!(s.film.exposure, -3.0);
         assert!(controls::set(&mut s, "film.printExposure", 0.5));

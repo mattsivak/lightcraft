@@ -732,7 +732,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Film Simulation",
             [],
             None,
-            "{enabled?: bool (default: toggle when nothing else is given, else unchanged), stock?: film id (develop.filmStocks), output?: scan|print (how a negative becomes the picture: a lab scan or a print on paper), paper?: paper id for print, \"\" = the stock's own} — film simulation: the photo exposed on a film stock, then lab-scanned or printed, in place of the tone map (Light ▸ Contrast, Whites and Blacks shape the light before the film)",
+            "{enabled?: bool (default: toggle when nothing else is given, else unchanged), stock?: film id (develop.filmStocks), output?: scan|print (how a negative becomes the picture: a lab scan or a print on paper), paper?: paper id for print, \"\" = the stock's own} — film simulation: the photo exposed on a film stock, then lab-scanned or printed, in place of the tone map (Light ▸ Contrast, Whites and Blacks then act on the scan or print: paper grade, white and black points)",
             has_active,
             |s, p| {
                 let id = active(s, "develop.film")?;

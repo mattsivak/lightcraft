@@ -313,7 +313,7 @@ pub fn film_look(s: &DevelopSettings) -> Option<lightcraft_film::Look> {
         print_exposure_ev: f.print_exposure,
         print_magenta: f.print_magenta,
         print_yellow: f.print_yellow,
-        // the tone map's Contrast, Whites and Blacks shape the light before the film instead
+        // the tone map's Contrast, Whites and Blacks act on the scan or print instead (paper grade, end points)
         contrast: s.light.contrast,
         whites: s.light.whites,
         blacks: s.light.blacks,

@@ -20,17 +20,26 @@ CC BY-SA 4.0. No spektrafilm code is used.
   - Slide film has neither: it is viewed directly.
 - **Paper** (Print only): the print paper. "Stock's own paper" uses the paper named in the film's data, or Kodak
   Portra Endura when that paper doesn't ship.
-- **Film Exposure** (−3…+3 EV): exposes the film more or less, on top of Light ▸ Exposure.
-- **Print Exposure** (−2…+2 EV, Print only): more print exposure gives a darker print.
-- **Magenta Filter** / **Yellow Filter** (−100…+100 CC, Print only): enlarger filtration on top of the automatic
-  neutral balance. More magenta makes the print greener, more yellow makes it bluer, as in a darkroom.
+- **Push / Pull** (−3…+3 stops; control id `film.exposure`): longer or shorter development. It steepens (push) or
+  flattens (pull) the film's densities around mid grey, 12 % per stop, so contrast changes and mid grey keeps its
+  brightness. Brightness is Light ▸ Exposure: there is one exposure control.
+- **Print Exposure** (−1…+1 EV, Print only): more print exposure gives a darker print.
+- **Magenta Filter** / **Yellow Filter** (−30…+30 CC, Print only): enlarger filtration on top of the automatic
+  neutral balance. More magenta makes the print greener, more yellow makes it bluer, as in a darkroom. The filter
+  factor is compensated: the overall print exposure is re-solved so mid grey keeps its brightness, and only the
+  colour changes.
 
-The film stage takes the place of the tone map. **Light ▸ Contrast, Whites and Blacks** then shape the light
-*before it reaches the film*, as a single gain per pixel (hue and saturation kept). Contrast scales the scene's log
-exposure around mid grey (×1.5 at +100, ÷1.5 at −100), so −Contrast is like a flatter, pulled film. Whites moves the
-light from one stop over grey upwards (up to ±1.5 stops). Blacks moves the light from 2.5 stops under grey downwards
-(+ lifts it). The film's own curves still give the toe and shoulder. Everything else before the tone map
-(white balance, exposure, highlights / shadows, texture / clarity, calibration) still feeds the film, and
+The film stage takes the place of the tone map. As in darkroom and lab tools (paper grade, white and black points),
+**Light ▸ Contrast, Whites and Blacks act on the scan or print**, after the film, pivoting on where scene mid grey
+comes out:
+- **Contrast** is a power around mid grey on luminance (slope ×1.5 at +100, ÷1.5 at −100), with hue kept and mid
+  grey fixed.
+- **Whites** brightens (+, up to ×4) or dims (−, down to ×½) from mid grey up, fully from 0.8. +100 clips from about
+  2.5 stops over grey; the shadows are untouched.
+- **Blacks** lifts (+) or crushes (−) below mid grey, neutrally; the highlights are untouched.
+
+**Light ▸ Exposure** is the light reaching the film. Everything else before the tone map (white balance, highlights /
+shadows, texture / clarity, calibration) still feeds the film, and
 everything after it (vibrance, saturation, the colour mixer, colour grading, B&W conversion, tone curves, vignette,
 grain) still applies to the print. The section's eye switch turns the film
 off for a before/after view; the photo then renders exactly as without film. With HDR editing on, the film look is
@@ -63,8 +72,10 @@ Everything below runs in linear Rec.2020 on a spectral grid of 81 samples, 380�
   - Rows are scaled so that an 18.4 % grey gives `E_l = 1` (log10 0). Measured: log exposure 0 sits mid-scale on
     the straight line of every shipped curve (Portra 400 densities 0.68 / 0.70 / 0.86 there, Velvia 0.51 / 0.54 /
     0.55).
-- **Film density.** `D_l = curve_l(log10(E_l · gain))`, read from the profile's `density_curves` (density above
-  base); `gain = 2^(film exposure)`.
+- **Film density.** `D_l = mid_l + (curve_l(log10 E_l) − mid_l) · (1 + 0.12 · push)`, read from the profile's
+  `density_curves` (density above base); `mid_l = curve_l(0)` is mid grey's density, which push/pull leaves in place.
+- **Contrast, Whites, Blacks** act on the scan, print or slide output afterwards (see above), pivoting on scene mid
+  grey's output luminance.
 - **Negative → paper.**
   - Negative transmittance: `T(λ) = 10^-(base(λ) + Σ_i D_i · dye_i(λ))`. Measured: `base + Σ D(0) · dye`
     reproduces each profile's `midscale_neutral_density` with RMS 0.085 (Portra 400), 0.02 (Portra Endura) and
@@ -75,11 +86,15 @@ Everything below runs in linear Rec.2020 on a spectral grid of 81 samples, 380�
 - **Lab scan** (`look.rs`, `Scanner`; negatives, the default).
   - The scanner reads the negative in three narrow bands at 650, 545 and 450 nm (σ 18 nm). This is our own
     approximation of minilab scanner LEDs, not measured data.
-  - Each channel's density above the film base (the orange mask divided out) is inverted against the film's own
-    slope in that channel, measured between −0.3 and +0.3 log exposure.
-  - Mid grey comes out neutral at mid grey; the result is scaled by 0.9 in log exposure (a little flat, as lab scans
-    are).
-  - A soft shoulder (`v·(1 + v/36)/(1 + v)`) maps 6 × to white.
+  - It is set up like a lab scanner:
+    - **Black point at the film base.** Each channel's density above the base (the orange mask divided out) is
+      inverted, and clear film is black in every channel, so the floor is neutral.
+    - **One fixed curve for every stock.** Green is read at 0.62 density per decade of exposure, a typical negative's
+      gamma, so a contrastier negative scans contrastier and a flatter one softer.
+    - **Channel balance.** Red and blue follow their own slope relative to green (measured between −0.3 and +0.3
+      log exposure), so greys stay neutral from black to white, balanced per channel at mid grey.
+    - **White four stops over mid grey**, through a soft shoulder (`v·(1 + v/W²)/(1 + v)`, with W solved so mid grey
+      stays at mid grey).
   - The film's own toe and shoulder, and its layer cross-talk, carry through, so stocks still look different.
 - **Neutral print balance.** Per-layer log offsets are chosen so the scanned print of an 18.4 % grey is neutral and
   keeps the brightness the plain offsets give. Newton's method over three unknowns with a numeric Jacobian. It is an

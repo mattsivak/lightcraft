@@ -186,7 +186,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
 
     section(app, ui, &d, "light", "Light", |app, ui, d| {
         hdr_row(app, ui, d);
-        // with film simulation on, Contrast, Whites and Blacks shape the light before the film (`lightcraft_film`)
+        // with film simulation on, Contrast, Whites and Blacks act on the scan or print (`lightcraft_film`)
         for c in ["light.exposure", "light.contrast", "light.highlights", "light.shadows", "light.whites", "light.blacks"] {
             control(app, ui, d, c, true);
         }
@@ -568,7 +568,7 @@ fn film_section(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings)
         }
         egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 2, bottom: 2 }).show(ui, |ui| {
             ui.label(
-                RichText::new(crate::i18n::tr("Light ▸ Contrast, Whites and Blacks shape the light before it reaches the film."))
+                RichText::new(crate::i18n::tr("Light ▸ Contrast, Whites and Blacks act on the scan or print, like paper grade and white and black points. Exposure sets how much light reaches the film."))
                     .font(t.font(12.0))
                     .color(t.text_dim),
             );
