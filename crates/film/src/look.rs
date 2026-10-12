@@ -29,6 +29,8 @@ const SCAN_KEY: &str = "@scan";
 const SCAN_GAMMA: f64 = 0.62;
 /// Stops over mid grey a lab scan takes to white (soft shoulder).
 const SCAN_WHITE_STOPS: f64 = 4.0;
+/// Strength of the lab scan's colour correction (0 = none, 1 = fully fitted to measured surfaces' true colours).
+const SCAN_COLOUR: f64 = 1.0;
 /// Push/pull development: negative contrast grows by this much per stop pushed (shrinks per stop pulled).
 const PUSH_GAMMA_PER_STOP: f32 = 0.12;
 /// Print filtration range, CC (1 CC = 0.01 density).
@@ -357,14 +359,16 @@ impl Viewer {
     }
 }
 
-/// A minilab scanner reading a negative: three narrow bands at 650, 545 and 450 nm (σ 18 nm; our own approximation
-/// of scanner LEDs, not measured data). Like a lab scanner's fixed setup:
+/// A minilab scanner reading a negative: three narrow bands (σ 18 nm) at the stock's cyan, magenta and yellow dye
+/// peaks (our own approximation of scanner LEDs, not measured data). Like a lab scanner's fixed setup:
 /// - black point at the film base: each channel's density above the base (the orange mask divided out) is inverted,
 ///   and clear film is black, in every channel (a neutral floor);
 /// - one fixed curve for every stock ([`SCAN_GAMMA`] on green), so a contrastier negative scans contrastier; red and
 ///   blue follow their own slope relative to green (as a scanner's channel balance does), so greys stay neutral
 ///   from black to white; balanced per channel at mid grey;
-/// - white [`SCAN_WHITE_STOPS`] over mid grey, through a soft shoulder.
+/// - white [`SCAN_WHITE_STOPS`] over mid grey, through a soft shoulder;
+/// - a colour-correction matrix ([`Scanner::fit_colour`]), as a lab scanner applies: the film's layers are not display
+///   primaries, so without one skies rotate towards cyan.
 struct Scanner {
     channels: [Spectrum; 3],
     base: [f64; 3],
@@ -373,18 +377,26 @@ struct Scanner {
     gamma: [f64; 3],
     /// The shoulder's white, in units where mid grey is `white · 2^-SCAN_WHITE_STOPS`.
     white: f64,
+    /// Colour correction on the linear scan (rows sum to 1: greys untouched).
+    colour: [[f64; 3]; 3],
 }
 
 impl Scanner {
     fn new(neg: &Stock) -> Result<Scanner, FilmError> {
-        let channels = [650.0, 545.0, 450.0]
+        // each band at its dye's absorption peak (kept inside the visible range the bands fit in)
+        let peak = |dye: &Spectrum| {
+            let i = (0..dye.len()).max_by(|&a, &b| dye[a].total_cmp(&dye[b])).unwrap_or(0);
+            spectrum::wavelength(i).clamp(420.0, 700.0)
+        };
+        let channels = [peak(&neg.dye[0]), peak(&neg.dye[1]), peak(&neg.dye[2])]
             .map(|c: f64| -> Spectrum { std::array::from_fn(|i| (-0.5 * ((spectrum::wavelength(i) - c) / 18.0).powi(2)).exp()) });
         let t0 = transmittance(neg, [0.0; 3]);
         let base: [f64; 3] = std::array::from_fn(|k| spectrum::dot(&channels[k], &t0));
         if base.iter().any(|b| !(b.is_finite() && *b > 0.0)) {
             return Err(FilmError::Profile(format!("{}: the base passes no light to the scanner", neg.id)));
         }
-        let mut s = Scanner { channels, base, mid: [0.0; 3], gamma: [SCAN_GAMMA; 3], white: 1.0 };
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let mut s = Scanner { channels, base, mid: [0.0; 3], gamma: [SCAN_GAMMA; 3], white: 1.0, colour: identity };
         let at = |le: f64| neg.curves.each_ref().map(|c| c.eval(le));
         s.mid = s.density(neg, at(0.0));
         if s.mid.iter().any(|m| !(m.is_finite() && *m > 0.05)) {
@@ -406,7 +418,24 @@ impl Scanner {
             }
         }
         s.white = 0.5 * (a + b);
+        if let Some(m) = s.fit_colour(neg) {
+            s.colour = std::array::from_fn(|r| std::array::from_fn(|c| identity[r][c] + SCAN_COLOUR * (m[r][c] - identity[r][c])));
+        }
         Ok(s)
+    }
+
+    /// The scanner's colour matrix for `neg`: the 3×3 with rows summing to 1 (greys untouched) that best maps the
+    /// linear scans of 190 measured surfaces (rawtoaces-data's training reflectances, lit by the stock's reference
+    /// light) to their true colours (Rec.2020, adapted to D65, mid grey = 1), by relative least squares. `None` if the
+    /// fit is degenerate (the scan then has no colour correction).
+    fn fit_colour(&self, neg: &Stock) -> Option<[[f64; 3]; 3]> {
+        let samples: Vec<([f64; 3], [f64; 3])> = training_patches(neg)?
+            .into_iter()
+            .map(|(d, t)| (self.linear(neg, d), t))
+            .filter(|(x, t)| x.iter().chain(t).all(|v| v.is_finite()) && 0.2627 * t[0] + 0.6780 * t[1] + 0.0593 * t[2] > 0.01)
+            .collect();
+        let start = least_squares_colour(&samples)?;
+        Some(refine_colour(&samples, start))
     }
 
     /// Scan densities above the film base (the orange mask divided out).
@@ -415,18 +444,159 @@ impl Scanner {
         std::array::from_fn(|k| -(spectrum::dot(&self.channels[k], &t) / self.base[k]).max(1e-30).log10())
     }
 
-    /// The scanned, inverted colour of a negative with layer densities `d` (linear Rec.2020).
-    fn view(&self, neg: &Stock, d: [f64; 3]) -> [f64; 3] {
+    /// The linear scan before colour correction: scene-relative light per channel, 1 at mid grey, 0 at the film base
+    /// (clear film is the black point).
+    fn linear(&self, neg: &Stock, d: [f64; 3]) -> [f64; 3] {
         let dn = self.density(neg, d);
-        let ratio = (-SCAN_WHITE_STOPS).exp2();
         std::array::from_fn(|k| {
-            // scene-relative light: 1 at mid grey; the base (clear film) is the black point
             let x = 10f64.powf((dn[k] - self.mid[k]) / self.gamma[k]);
             let black = 10f64.powf(-self.mid[k] / self.gamma[k]);
-            let lin = ((x - black) / (1.0 - black)).max(0.0);
-            shoulder(lin * self.white * ratio, self.white)
+            ((x - black) / (1.0 - black)).max(0.0)
         })
     }
+
+    /// The scanned, inverted colour of a negative with layer densities `d` (linear Rec.2020).
+    fn view(&self, neg: &Stock, d: [f64; 3]) -> [f64; 3] {
+        let lin = self.linear(neg, d);
+        let ratio = (-SCAN_WHITE_STOPS).exp2();
+        std::array::from_fn(|r| {
+            let c = &self.colour[r];
+            let v = c[0] * lin[0] + c[1] * lin[1] + c[2] * lin[2];
+            shoulder(v * self.white * ratio, self.white)
+        })
+    }
+}
+
+/// The rows-sum-to-1 3×3 minimising relative squared error from linear scans `x` to true colours `t` (each sample
+/// weighted by 1/luminance², KKT per row): the start of [`refine_colour`]. `None` if degenerate.
+fn least_squares_colour(samples: &[([f64; 3], [f64; 3])]) -> Option<[[f64; 3]; 3]> {
+    // normal equations per output row: A = Σ w·x·xᵀ, b_r = Σ w·x·t_r
+    let mut a = [[0.0f64; 3]; 3];
+    let mut b = [[0.0f64; 3]; 3];
+    for (x, t) in samples {
+        let y = 0.2627 * t[0] + 0.6780 * t[1] + 0.0593 * t[2];
+        let w = 1.0 / (y * y);
+        for (i, (ai, xi)) in a.iter_mut().zip(x).enumerate() {
+            for (aij, xj) in ai.iter_mut().zip(x) {
+                *aij += w * xi * xj;
+            }
+            for (bj, tj) in b.iter_mut().zip(t) {
+                bj[i] += w * xi * tj;
+            }
+        }
+    }
+    // minimise mᵀ A m − 2 b_rᵀ m subject to m₀ + m₁ + m₂ = 1 (KKT, 4 unknowns per row)
+    let mut out = [[0.0f64; 3]; 3];
+    for (row, br) in out.iter_mut().zip(&b) {
+        let mut kkt = vec![vec![0.0f64; 5]; 4];
+        for (i, (k, ai)) in kkt.iter_mut().zip(&a).enumerate() {
+            for (kij, aij) in k.iter_mut().zip(ai) {
+                *kij = 2.0 * aij;
+            }
+            k[3] = 1.0;
+            k[4] = 2.0 * br[i];
+        }
+        if let Some(last) = kkt.get_mut(3) {
+            *last = vec![1.0, 1.0, 1.0, 0.0, 1.0];
+        }
+        let m = basis::gauss_jordan(kkt)?;
+        *row = [*m.first()?, *m.get(1)?, *m.get(2)?];
+    }
+    out.iter().flatten().all(|v| v.is_finite() && v.abs() < 10.0).then_some(out)
+}
+
+/// OkLab of a scene-relative colour (mid grey = 1).
+fn oklab(c: [f64; 3]) -> [f64; 3] {
+    lightcraft_color::perceptual::oklab_from_2020(c.map(|v| (v * MID_GREY) as f32)).map(f64::from)
+}
+
+/// Refines `start` (rows summing to 1) to minimise the perceptual error, Σ ΔE_OkLab², between the corrected scans and
+/// the true colours: damped Gauss–Newton over the six free entries (two per row), a numeric Jacobian, 30 steps at
+/// most. Least squares in linear light shrinks colours towards grey and spreads its error unevenly over hues; ΔE
+/// counts lost chroma and hue alike. Returns `start` if no step improves it.
+fn refine_colour(samples: &[([f64; 3], [f64; 3])], start: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let truth: Vec<[f64; 3]> = samples.iter().map(|(_, t)| oklab(t.map(|v| v.max(0.0)))).collect();
+    // free parameters: m[r][1], m[r][2]; m[r][0] = 1 − m[r][1] − m[r][2]
+    let unpack = |p: &[f64; 6]| -> [[f64; 3]; 3] { std::array::from_fn(|r| [1.0 - p[2 * r] - p[2 * r + 1], p[2 * r], p[2 * r + 1]]) };
+    let residuals = |p: &[f64; 6]| -> Vec<f64> {
+        let m = unpack(p);
+        samples
+            .iter()
+            .zip(&truth)
+            .flat_map(|((x, _), t)| {
+                let c: [f64; 3] = std::array::from_fn(|r| (m[r][0] * x[0] + m[r][1] * x[1] + m[r][2] * x[2]).max(0.0));
+                let o = oklab(c);
+                [o[0] - t[0], o[1] - t[1], o[2] - t[2]]
+            })
+            .collect()
+    };
+    let cost = |r: &[f64]| r.iter().map(|v| v * v).sum::<f64>();
+    let mut p: [f64; 6] = std::array::from_fn(|i| start[i / 2][1 + i % 2]);
+    let mut r = residuals(&p);
+    let mut c0 = cost(&r);
+    let mut lambda = 1e-3;
+    for _ in 0..30 {
+        let h = 1e-5;
+        let jac: Vec<Vec<f64>> = (0..6)
+            .map(|j| {
+                let mut q = p;
+                q[j] += h;
+                residuals(&q).iter().zip(&r).map(|(a, b)| (a - b) / h).collect()
+            })
+            .collect();
+        // (JᵀJ + λ·diag) δ = −Jᵀr
+        let mut sys = vec![vec![0.0f64; 7]; 6];
+        for (i, row) in sys.iter_mut().enumerate() {
+            for (j, v) in row.iter_mut().take(6).enumerate() {
+                *v = jac[i].iter().zip(&jac[j]).map(|(a, b)| a * b).sum::<f64>();
+            }
+            row[i] *= 1.0 + lambda;
+            row[6] = -jac[i].iter().zip(&r).map(|(a, b)| a * b).sum::<f64>();
+        }
+        let Some(delta) = basis::gauss_jordan(sys) else { break };
+        let q: [f64; 6] = std::array::from_fn(|i| p[i] + delta.get(i).copied().unwrap_or(0.0));
+        let rq = residuals(&q);
+        let cq = cost(&rq);
+        if cq.is_finite() && cq < c0 {
+            let gain = c0 - cq;
+            (p, r, c0) = (q, rq, cq);
+            lambda = (lambda * 0.3).max(1e-9);
+            if gain < 1e-12 {
+                break;
+            }
+        } else {
+            lambda *= 10.0;
+            if lambda > 1e6 {
+                break;
+            }
+        }
+    }
+    let m = unpack(&p);
+    if m.iter().flatten().all(|v| v.is_finite() && v.abs() < 10.0) { m } else { start }
+}
+
+/// The 190 measured surfaces (rawtoaces-data training reflectances) lit by `neg`'s reference light: each one's layer
+/// densities on the film (its ideal exposure, mid grey = log exposure 0) and its true colour (Rec.2020, adapted to
+/// D65, mid grey = 1). `None` if the light or the stock is degenerate.
+fn training_patches(neg: &Stock) -> Option<Vec<([f64; 3], [f64; 3])>> {
+    let light = spectrum::illuminant(&neg.reference_illuminant);
+    let lit: [Spectrum; 3] = std::array::from_fn(|l| mul(&light, &neg.sensitivity[l]));
+    let grey: [f64; 3] = lit.each_ref().map(|s| MID_GREY * s.iter().sum::<f64>());
+    let white = xyz(&light);
+    if !(white[1].is_finite() && white[1] > 0.0) || grey.iter().any(|g| !(g.is_finite() && *g > 0.0)) {
+        return None;
+    }
+    let k = 1.0 / (white[1] * MID_GREY);
+    let to_2020 = REC2020.from_xyz().mul(&bradford(Xy::from_xyz(white), D65)).mul(&Mat3::diag(k, k, k));
+    Some(
+        crate::training_table::REFLECTANCES
+            .iter()
+            .map(|refl| {
+                let d = std::array::from_fn(|l| neg.curves[l].eval((spectrum::dot(&lit[l], refl) / grey[l]).max(1e-7).log10()));
+                (d, to_2020.apply(xyz(&mul(&light, refl))))
+            })
+            .collect(),
+    )
 }
 
 /// A lab scan's soft shoulder: linear near black, `white` maps to 1.
@@ -635,6 +805,46 @@ mod tests {
             assert!(luma(white) > 0.8 && spread(white) < 0.06, "{id}: 4 stops over grey {white:?}");
             let over = l.apply([MID_GREY as f32 * 64.0; 3]);
             assert!(luma(over) > 0.95, "{id}: 6 stops over grey {over:?}");
+        }
+    }
+
+    /// The lab scanner's colour matrix keeps skies blue and skin true: measured surfaces (rawtoaces-data) come out much
+    /// closer to their true hue than when the film's layers are read straight as display primaries (which rotated
+    /// skies about 20° towards cyan), and no worse overall.
+    #[test]
+    fn lab_scan_colour_matrix_keeps_skies_blue() {
+        use lightcraft_color::perceptual::oklab_from_2020;
+        let hue = |c: [f64; 3]| {
+            let l = oklab_from_2020(c.map(|v| v as f32));
+            (l[2].atan2(l[1]).to_degrees(), l[1].hypot(l[2]))
+        };
+        for id in ["kodak_portra_400", "kodak_ektar_100", "kodak_gold_200"] {
+            let neg = stock(id).unwrap();
+            let fitted = Scanner::new(neg).unwrap();
+            let mut plain = Scanner::new(neg).unwrap();
+            plain.colour = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+            assert!(fitted.colour.iter().all(|r| (r.iter().sum::<f64>() - 1.0).abs() < 1e-9), "{id}: rows sum to 1");
+            // mean |hue error| (°) with and without the matrix over the chromatic surfaces with hue in lo..hi
+            let hue_error = |lo: f32, hi: f32| {
+                let (mut n, mut with, mut without) = (0, 0.0f32, 0.0f32);
+                for (d, truth) in training_patches(neg).unwrap() {
+                    let (h, c) = hue(truth.map(|v| v * MID_GREY));
+                    if h < lo || h > hi || c < 0.03 {
+                        continue;
+                    }
+                    let diff = |s: &Scanner| ((hue(s.view(neg, d)).0 - h + 540.0).rem_euclid(360.0) - 180.0).abs();
+                    n += 1;
+                    with += diff(&fitted);
+                    without += diff(&plain);
+                }
+                (n, with / n.max(1) as f32, without / n.max(1) as f32)
+            };
+            let (n, f, p) = hue_error(-150.0, -80.0);
+            assert!(n >= 10 && f < p - 8.0 && f < 10.0, "{id}: sky hue error {f}° with the matrix, {p}° without ({n} surfaces)");
+            let (_, f, p) = hue_error(35.0, 75.0);
+            assert!(f < p && f < 8.0, "{id}: skin / orange hue error {f}° with the matrix, {p}° without");
+            let (_, f, p) = hue_error(-180.0, 180.0);
+            assert!(f < p - 2.0, "{id}: overall hue error {f}° with the matrix, {p}° without");
         }
     }
 

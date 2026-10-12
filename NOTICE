@@ -27,6 +27,12 @@ shipped in rawtoaces-data (CIE, CC-BY-4.0) and the CIE daylight basis functions 
 as shipped in colour-science (BSD-3-Clause), generated with tools/film_cie_table.py. See
 assets/ATTRIBUTION.md.
 
+crates/film/src/training_table.rs (lightcraft-film) holds the 190 measured surface reflectances of
+rawtoaces-data (https://github.com/AcademySoftwareFoundation/rawtoaces-data, v1.1.0, training data),
+an Academy Software Foundation project licensed under the Apache License 2.0, generated with
+tools/film_training_table.py. The lab-scan colour correction is fitted to them. See
+assets/ATTRIBUTION.md.
+
 assets/film/spektrafilm/ holds film and print-paper stock profiles from spektrafilm by Andrea Volpato
 (https://github.com/andreavolpato/spektrafilm), unmodified, licensed under CC BY-SA 4.0 (see
 assets/film/spektrafilm/SPEKTRAFILM_LICENSE.txt). They are compiled into lightcraft-film. This licence

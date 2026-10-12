@@ -84,8 +84,8 @@ Everything below runs in linear Rec.2020 on a spectral grid of 81 samples, 380�
   - The enlarger lamp is our own approximation: a 3200 K blackbody with a logistic roll-off above 700 nm. It is not
     measured filter data.
 - **Lab scan** (`look.rs`, `Scanner`; negatives, the default).
-  - The scanner reads the negative in three narrow bands at 650, 545 and 450 nm (σ 18 nm). This is our own
-    approximation of minilab scanner LEDs, not measured data.
+  - The scanner reads the negative in three narrow bands (σ 18 nm) at the stock's cyan, magenta and yellow dye
+    peaks. This is our own approximation of minilab scanner LEDs, not measured data.
   - It is set up like a lab scanner:
     - **Black point at the film base.** Each channel's density above the base (the orange mask divided out) is
       inverted, and clear film is black in every channel, so the floor is neutral.
@@ -95,6 +95,26 @@ Everything below runs in linear Rec.2020 on a spectral grid of 81 samples, 380�
       log exposure), so greys stay neutral from black to white, balanced per channel at mid grey.
     - **White four stops over mid grey**, through a soft shoulder (`v·(1 + v/W²)/(1 + v)`, with W solved so mid grey
       stays at mid grey).
+    - **A colour-correction matrix**, as lab scanners apply, before the shoulder.
+      - Why: the film's layers are not display primaries, and read straight they rotated skies about 20° towards cyan
+        and turned skin pinker.
+      - The matrix is a per-stock 3×3 with rows summing to 1, so greys are untouched. It is fitted when the stock is
+        baked to the 190 measured surface reflectances of rawtoaces-data (`crates/film/src/training_table.rs`,
+        Apache-2.0).
+      - Each surface is lit by the stock's reference light; its ideal film exposure goes through the film curves and
+        the scanner, and is compared with its true colour (Rec.2020, adapted to D65, mid grey = 1).
+      - The fit is least squares in linear light, then refined by damped Gauss–Newton to minimise ΔE in OkLab. Least
+        squares alone shrank colours and traded greens for skies.
+      - Measured mean hue error on those surfaces, without → with the matrix:
+
+        | Stock | Sky / blue | Skin / orange | All colours |
+        |---|---|---|---|
+        | Portra 400 | 24° → 6° | 12° → 6° | 10.5° → 6.3° |
+        | Ektar 100 | 19° → 7° | 14° → 6° | 10.9° → 6.9° |
+        | Gold 200 | 16° → 7° | 11° → 4° | 9.8° → 7.1° |
+
+        Greens are unchanged to about 2° worse.
+      - A soft per-channel scan keeps about 80–90 % of the true chroma; more is Vibrance's job.
   - The film's own toe and shoulder, and its layer cross-talk, carry through, so stocks still look different.
 - **Neutral print balance.** Per-layer log offsets are chosen so the scanned print of an 18.4 % grey is neutral and
   keeps the brightness the plain offsets give. Newton's method over three unknowns with a numeric Jacobian. It is an

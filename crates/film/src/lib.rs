@@ -12,6 +12,7 @@ mod look;
 mod profile;
 pub mod spectrum;
 mod stocks;
+mod training_table;
 
 pub use look::{Look, LookParams, Output, look};
 pub use profile::{Curve, Kind, Stock};
@@ -24,7 +25,8 @@ pub const CREDITS: &str = "Film simulation stock data: spektrafilm by Andrea Vol
 Fujifilm Velvia 100 and Kodak Portra Endura, processed by the author from Kodak and Fujifilm data sheets. \
 LightCraft's film model is its own; it uses no spektrafilm code.\n\n\
 CIE 1931 colour-matching functions (CIE, CC-BY-4.0, via rawtoaces-data) and CIE daylight basis functions \
-(CIE 15:2004, via colour-science, BSD-3-Clause).";
+(CIE 15:2004, via colour-science, BSD-3-Clause). The lab scanner's colour correction is fitted to the 190 measured \
+surface reflectances of rawtoaces-data (Academy Software Foundation, Apache-2.0).";
 
 /// Why a film look can't be built.
 #[derive(Clone, Debug, PartialEq, Eq)]

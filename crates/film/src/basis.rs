@@ -69,7 +69,7 @@ fn solve() -> Option<[Spectrum; 3]> {
 }
 
 /// Solve the augmented system `a` (n rows, n + 1 columns) with partial pivoting; `None` if singular.
-fn gauss_jordan(mut a: Vec<Vec<f64>>) -> Option<Vec<f64>> {
+pub(crate) fn gauss_jordan(mut a: Vec<Vec<f64>>) -> Option<Vec<f64>> {
     let n = a.len();
     for col in 0..n {
         let piv = (col..n).max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs()))?;
