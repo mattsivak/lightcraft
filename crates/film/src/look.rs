@@ -285,12 +285,14 @@ fn bake(film: &Stock, paper: Option<&Stock>) -> Result<Baked, FilmError> {
         }
         Some(p) => {
             let lamp = spectrum::enlarger_lamp();
-            let to_paper = Grid3::bake(GRID, lo, hi, |d| print_log_exposure(film, p, &lamp, d))?;
             let (plo, phi) = density_box(&p.curves);
             let v = Viewer::new(p)?;
             let scan = Grid3::bake(GRID, plo, phi, |d| v.view(p, d))?;
             let mid = film.curves.each_ref().map(|c| c.eval(0.0));
-            let balance = neutral_balance(print_log_exposure(film, p, &lamp, mid), p, &v);
+            let lh_mid = print_log_exposure(film, p, &lamp, mid);
+            let balance = neutral_balance(lh_mid, p, &v);
+            let interimage = Interimage::fit(film, p, &lamp, &v, balance, lh_mid);
+            let to_paper = Grid3::bake(GRID, lo, hi, |d| interimage.apply(print_log_exposure(film, p, &lamp, d)))?;
             Path::Print { to_paper, balance, paper_curves: p.curves.each_ref().map(table), scan }
         }
     };
@@ -516,10 +518,7 @@ fn oklab(c: [f64; 3]) -> [f64; 3] {
 /// counts lost chroma and hue alike. Returns `start` if no step improves it.
 fn refine_colour(samples: &[([f64; 3], [f64; 3])], start: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let truth: Vec<[f64; 3]> = samples.iter().map(|(_, t)| oklab(t.map(|v| v.max(0.0)))).collect();
-    // free parameters: m[r][1], m[r][2]; m[r][0] = 1 − m[r][1] − m[r][2]
-    let unpack = |p: &[f64; 6]| -> [[f64; 3]; 3] { std::array::from_fn(|r| [1.0 - p[2 * r] - p[2 * r + 1], p[2 * r], p[2 * r + 1]]) };
-    let residuals = |p: &[f64; 6]| -> Vec<f64> {
-        let m = unpack(p);
+    let residuals = |m: &[[f64; 3]; 3]| -> Vec<f64> {
         samples
             .iter()
             .zip(&truth)
@@ -530,6 +529,16 @@ fn refine_colour(samples: &[([f64; 3], [f64; 3])], start: [[f64; 3]; 3]) -> [[f6
             })
             .collect()
     };
+    fit_rows_sum_one(start, residuals, 10.0)
+}
+
+/// Damped Gauss–Newton over a 3×3 whose rows sum to 1 (six free entries, two per row; numeric Jacobian, at most 30
+/// steps), minimising the sum of squared `residuals`. Returns `start` if no step improves it or the result leaves
+/// `±bound`.
+fn fit_rows_sum_one(start: [[f64; 3]; 3], residuals: impl Fn(&[[f64; 3]; 3]) -> Vec<f64>, bound: f64) -> [[f64; 3]; 3] {
+    // free parameters: m[r][1], m[r][2]; m[r][0] = 1 − m[r][1] − m[r][2]
+    let unpack = |p: &[f64; 6]| -> [[f64; 3]; 3] { std::array::from_fn(|r| [1.0 - p[2 * r] - p[2 * r + 1], p[2 * r], p[2 * r + 1]]) };
+    let residuals = |p: &[f64; 6]| residuals(&unpack(p));
     let cost = |r: &[f64]| r.iter().map(|v| v * v).sum::<f64>();
     let mut p: [f64; 6] = std::array::from_fn(|i| start[i / 2][1 + i % 2]);
     let mut r = residuals(&p);
@@ -572,7 +581,78 @@ fn refine_colour(samples: &[([f64; 3], [f64; 3])], start: [[f64; 3]; 3]) -> [[f6
         }
     }
     let m = unpack(&p);
-    if m.iter().flatten().all(|v| v.is_finite() && v.abs() < 10.0) { m } else { start }
+    if m.iter().flatten().all(|v| v.is_finite() && v.abs() < bound) { m } else { start }
+}
+
+/// Interimage correction of a print: the colour separation real negatives gain from interlayer (DIR) effects, which
+/// mainly offset the print paper's unwanted dye absorptions (they cost a print about 30 % of its chroma and turn
+/// greens muddy; the negative→paper crosstalk adds a little). It acts on the paper's log exposures, normalised so the
+/// grey axis stays put: `lh' = mid + v ⊙ M·((lh − mid) / v)`, `v` the paper layers' log exposure per decade of scene
+/// exposure along grey at mid grey, `M` a 3×3 whose rows sum to 1 (so grey, mid grey and the neutral balance are
+/// unchanged). `M` is fitted per (film, paper) to the 190 measured surfaces (rawtoaces-data): printed and viewed, they
+/// should match their true colour at the print's own tone (true colour scaled to the print's grey-scale response), in
+/// OkLab. Physically motivated, but fitted, not measured film data.
+#[derive(Clone, Copy, Debug)]
+struct Interimage {
+    mid: [f64; 3],
+    v: [f64; 3],
+    m: [[f64; 3]; 3],
+}
+
+impl Interimage {
+    fn apply(&self, lh: [f64; 3]) -> [f64; 3] {
+        let u: [f64; 3] = std::array::from_fn(|k| (lh[k] - self.mid[k]) / self.v[k]);
+        std::array::from_fn(|r| {
+            let row = &self.m[r];
+            self.mid[r] + self.v[r] * (row[0] * u[0] + row[1] * u[1] + row[2] * u[2])
+        })
+    }
+
+    /// Fitted to the measured surfaces (see the type); the identity (no correction) if the stocks are degenerate.
+    fn fit(film: &Stock, paper: &Stock, lamp: &Spectrum, viewer: &Viewer, balance: [f32; 3], lh_mid: [f64; 3]) -> Interimage {
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let at = |le: f64| print_log_exposure(film, paper, lamp, film.curves.each_ref().map(|c| c.eval(le)));
+        let (lo, hi) = (at(-0.05), at(0.05));
+        let v: [f64; 3] = std::array::from_fn(|k| (hi[k] - lo[k]) / 0.1);
+        let plain = Interimage { mid: lh_mid, v, m: identity };
+        if v.iter().any(|x| !(x.is_finite() && x.abs() > 1e-3)) {
+            return Interimage { v: [1.0; 3], ..plain };
+        }
+        let Some(patches) = training_patches(film) else { return plain };
+        let balance = balance.map(f64::from);
+        let print = |lh: [f64; 3]| viewer.view(paper, std::array::from_fn(|j| paper.curves[j].eval(lh[j] + balance[j])));
+        let luma = |c: [f64; 3]| 0.2627 * c[0] + 0.6780 * c[1] + 0.0593 * c[2];
+        let lab = |c: [f64; 3]| lightcraft_color::perceptual::oklab_from_2020(c.map(|x| x.max(0.0) as f32)).map(f64::from);
+        // each surface's paper log exposure (fixed) and true colour (mid grey = 1); the darkest left out
+        let samples: Vec<([f64; 3], [f64; 3], f64)> = patches
+            .into_iter()
+            .filter_map(|(d, t)| {
+                let y = luma(t);
+                (y > 0.05 && t.iter().all(|x| x.is_finite())).then(|| (print_log_exposure(film, paper, lamp, d), t, y))
+            })
+            .collect();
+        // the print's grey wedge, −6..+4 stops in quarter stops: scene log2 luminance → print luminance
+        let stops: Vec<f64> = (0..=40).map(|i| -6.0 + 0.25 * f64::from(i)).collect();
+        let residuals = |m: &[[f64; 3]; 3]| -> Vec<f64> {
+            let ii = Interimage { m: *m, ..plain };
+            let wedge: Vec<f64> = stops.iter().map(|s| luma(print(ii.apply(at(s * std::f64::consts::LOG10_2))))).collect();
+            let tone = |log2y: f64| {
+                let t = ((log2y + 6.0) * 4.0).clamp(0.0, 40.0);
+                let i = (t as usize).min(39);
+                let (a, b) = (wedge.get(i).copied().unwrap_or(0.0), wedge.get(i + 1).copied().unwrap_or(0.0));
+                a + (b - a) * (t - i as f64)
+            };
+            samples
+                .iter()
+                .flat_map(|(lh, t, y)| {
+                    let reference = t.map(|x| x * tone(y.log2()) / y);
+                    let (o, r) = (lab(print(ii.apply(*lh))), lab(reference));
+                    [o[0] - r[0], o[1] - r[1], o[2] - r[2]]
+                })
+                .collect()
+        };
+        Interimage { m: fit_rows_sum_one(identity, residuals, 3.0), ..plain }
+    }
 }
 
 /// The 190 measured surfaces (rawtoaces-data training reflectances) lit by `neg`'s reference light: each one's layer
@@ -845,6 +925,54 @@ mod tests {
             assert!(f < p && f < 8.0, "{id}: skin / orange hue error {f}° with the matrix, {p}° without");
             let (_, f, p) = hue_error(-180.0, 180.0);
             assert!(f < p - 2.0, "{id}: overall hue error {f}° with the matrix, {p}° without");
+        }
+    }
+
+    /// Prints keep greens and skies: with the interimage correction, measured surfaces (rawtoaces-data) printed on
+    /// Portra Endura keep their hue and most of their chroma against the print's own tone (without it greens kept
+    /// about 60 % of their chroma and turned muddy, and skies rotated about 15°).
+    #[test]
+    fn prints_keep_greens_and_skies() {
+        use lightcraft_color::perceptual::oklab_from_2020;
+        let lch = |c: [f32; 3]| {
+            let l = oklab_from_2020(c.map(|v| v.max(0.0)));
+            (l[2].atan2(l[1]).to_degrees(), l[1].hypot(l[2]))
+        };
+        for id in ["kodak_portra_400", "kodak_ektar_100", "kodak_gold_200"] {
+            let l = look(&params(id)).unwrap();
+            let neg = stock(id).unwrap();
+            let tone = |y: f32| luma(l.apply([y * MID_GREY as f32; 3]));
+            // (hue family, mean |hue error|, mean chroma ratio) over chromatic surfaces
+            let mut fam: Vec<(&str, f32, f32, f32, usize)> =
+                vec![("sky", -150.0, -80.0, 0.0, 0), ("green", 110.0, 170.0, 0.0, 0), ("all", -180.0, 180.0, 0.0, 0)];
+            let mut chroma = [0.0f32; 3];
+            for (_, t) in training_patches(neg).unwrap() {
+                let t = t.map(|v| v as f32);
+                let y = luma(t);
+                if y < 0.05 {
+                    continue;
+                }
+                let reference = t.map(|v| v * tone(y) / y);
+                let (h, c) = lch(reference);
+                if c < 0.02 {
+                    continue;
+                }
+                let (ho, co) = lch(l.apply(t.map(|v| v * MID_GREY as f32)));
+                let dh = ((ho - h + 540.0).rem_euclid(360.0) - 180.0).abs();
+                for (i, f) in fam.iter_mut().enumerate() {
+                    if h >= f.1 && h <= f.2 {
+                        f.3 += dh;
+                        f.4 += 1;
+                        if let Some(c0) = chroma.get_mut(i) {
+                            *c0 += co / c;
+                        }
+                    }
+                }
+            }
+            let mean = |i: usize| (fam[i].3 / fam[i].4.max(1) as f32, chroma[i] / fam[i].4.max(1) as f32);
+            let ((sky_h, _), (green_h, green_c), (all_h, all_c)) = (mean(0), mean(1), mean(2));
+            assert!(green_c > 0.85 && all_c > 0.85, "{id}: greens keep only {green_c} of their chroma in a print (all {all_c})");
+            assert!(sky_h < 10.0 && green_h < 10.0 && all_h < 8.0, "{id}: hue errors sky {sky_h}°, green {green_h}°, all {all_h}°");
         }
     }
 

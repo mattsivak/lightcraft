@@ -122,7 +122,37 @@ Everything below runs in linear Rec.2020 on a spectral grid of 81 samples, 380�
 - **Print exposure and filtration.** On top of the balance: print exposure adds `EV · log10 2` to every paper layer;
   magenta CC subtracts `CC / 100` density from the green-sensitive layer's exposure, yellow CC from the
   blue-sensitive layer's (1 CC = 0.01 density).
-- **Paper density.** `D'_j = paper_curve_j(H_j + balance_j + offset_j)`.
+- **Interimage correction** (`look.rs`, `Interimage`; prints).
+  - Why: a print measured against true colours at its own tone was muddy. Greens kept about 60 % of their chroma and
+    turned about 15° towards yellow, and skies rotated about 15°.
+  - The cause, found by swapping print stages for ideal ones one at a time:
+    - mostly the paper's dyes absorbing outside their own band, seen under D50 (about 30 % of chroma);
+    - partly the negative→paper crosstalk.
+    - Not the cause: the enlarger lamp, the neutral balance and the paper's sensitivities. Changing those made it
+      worse.
+  - Real negatives offset this with interlayer (DIR) interimage effects; the model has none of its own, so a correction
+    stands in for them.
+  - How it works:
+    - It acts on the paper's log exposures, normalised so the grey axis stays put:
+      `H' = H_mid + v ⊙ M·((H − H_mid) / v)`, where `v` is the paper layers' log exposure per decade of scene exposure
+      along grey.
+    - `M` is a 3×3 whose rows sum to 1, so grey, mid grey and the neutral balance are unchanged.
+    - `M` is fitted per (film, paper) at bake time, by damped Gauss–Newton on ΔE in OkLab, to the 190 measured
+      surfaces. The target is each surface's true colour scaled to the print's own grey-scale tone, so the print keeps
+      its contrast and only colour is corrected.
+    - It is baked into the paper grid, so it costs nothing per pixel; the bake takes about 17 ms more.
+  - Physically motivated but fitted: these are not measured film data.
+  - Result (measured against the print's tone, without → with):
+
+    | Stock | Sky hue error | Greens: hue error, chroma | All colours |
+    |---|---|---|---|
+    | Portra 400 | 15° → 7° | 16°, ×0.62 → 5.5°, ×1.10 | 10.6° → 5.7°, ΔE 6.1 → 3.2 |
+    | Ektar 100 | 16° → 9° | 13° → 7° | ΔE 6.2 → 3.5 |
+    | Gold 200 | 15° → 7° | 12° → 5° | ΔE 5.9 → 3.3 |
+
+    Skin and red hue are about 1–2° worse. Highlights still desaturate on the paper's toe, which is real print
+    behaviour.
+- **Paper density.** `D'_j = paper_curve_j(H'_j + balance_j + offset_j)`.
 - **Scan / view.**
   - Reflectance (paper) or transmittance (slide) is `10^-(base + Σ D · dye)`, seen under D50, giving XYZ.
   - Bradford-adapted from the unexposed base's white to D65, then converted to linear Rec.2020 with the base mapped
