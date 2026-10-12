@@ -3226,6 +3226,7 @@ dependencies = [
  "lightcraft-develop",
  "lightcraft-faces",
  "lightcraft-fetch",
+ "lightcraft-film",
  "lightcraft-geocode",
  "lightcraft-geom",
  "lightcraft-gpu",
@@ -3273,6 +3274,15 @@ dependencies = [
  "rustls-rustcrypto",
  "sha2",
  "webpki-roots",
+]
+
+[[package]]
+name = "lightcraft-film"
+version = "0.7.0"
+dependencies = [
+ "lightcraft-color",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3379,6 +3389,7 @@ dependencies = [
  "image",
  "lightcraft-color",
  "lightcraft-develop",
+ "lightcraft-film",
  "lightcraft-geom",
  "lightcraft-inpaint",
  "lightcraft-raster",
@@ -3487,6 +3498,7 @@ dependencies = [
  "lightcraft-develop",
  "lightcraft-engine",
  "lightcraft-faces",
+ "lightcraft-film",
  "lightcraft-geom",
  "lightcraft-merge",
  "lightcraft-meta",

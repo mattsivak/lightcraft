@@ -152,6 +152,8 @@ pub fn mask_terms(j: &LocalAdjustments) -> [f32; MASK_TERMS] {
 pub struct FinishParams {
     /// A LUT profile and its amount (0..2), applied to the display-encoded colour.
     pub lut: Option<(std::sync::Arc<crate::lut::Lut3d>, f32)>,
+    /// Film simulation ([`film_look`]): replaces the tone map (CPU only; the GPU path declines film renders).
+    pub film: Option<lightcraft_film::Look>,
     pub tone: ToneMap,
     pub ops: ColorOps,
     /// Calibration: primaries matrix (row-major, linear Rec.2020) and shadows tint (−1..1).
@@ -223,9 +225,13 @@ impl FinishParams {
             ((s.grain.amount / 100.0) as f32 * 0.13, cell.max(0.6), (s.grain.roughness / 100.0) as f32, s.grain.seed)
         });
         let calibration = s.section_enabled("calibration");
-        let peak = s.hdr.peak();
+        let film = film_look(s);
+        // the film look is display-referred (the paper or slide base is white): an HDR render of it peaks at SDR
+        // white, so the output-space conversion and gamut map below can't carry it past 1
+        let peak = if film.is_some() { 1.0 } else { s.hdr.peak() };
         FinishParams {
             peak,
+            film,
             calib: if calibration { crate::colorops::calibration_matrix(&s.calibration) } else { None },
             shadow_tint: if calibration { (s.calibration.shadows_tint / 100.0) as f32 } else { 0.0 },
             tone: base_tone(s, info, peak),
@@ -287,6 +293,32 @@ pub fn base_tone(s: &DevelopSettings, info: &SourceInfo, peak: f32) -> ToneMap {
             None => ToneMap::display_hdr(l.contrast, l.whites, l.blacks, peak),
         },
     }
+}
+
+/// The film look `s` asks for: `None` while film simulation is off, its section's eye is off, or its stock or paper
+/// is not one that ships (a hand-edited file) — then the photo renders without film rather than failing.
+pub fn film_look(s: &DevelopSettings) -> Option<lightcraft_film::Look> {
+    let f = &s.film;
+    if !f.enabled || !s.section_enabled("film") {
+        return None;
+    }
+    lightcraft_film::look(&lightcraft_film::LookParams {
+        stock: f.stock.clone(),
+        output: match f.output {
+            lightcraft_develop::FilmOutput::Scan => lightcraft_film::Output::Scan,
+            lightcraft_develop::FilmOutput::Print => lightcraft_film::Output::Print,
+        },
+        paper: f.paper.clone(),
+        exposure_ev: f.exposure,
+        print_exposure_ev: f.print_exposure,
+        print_magenta: f.print_magenta,
+        print_yellow: f.print_yellow,
+        // the tone map's Contrast, Whites and Blacks act on the scan or print instead (paper grade, end points)
+        contrast: s.light.contrast,
+        whites: s.light.whites,
+        blacks: s.light.blacks,
+    })
+    .ok()
 }
 
 pub(crate) fn finish(
@@ -530,19 +562,24 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
                 c = crate::colorops::calibrate(c, fp.calib.as_ref(), fp.shadow_tint);
             }
 
-            // --- tone map on luminance, highlight desaturation
-            let yl = luminance_2020(c);
-            let o = tone.apply(yl);
-            let mut d = if yl > 1e-9 { c.map(|v| v * o / yl) } else { [0.0; 3] };
-            let k = tone.chroma_scale(o);
-            if k != 1.0 {
-                d = d.map(|v| o + (v - o) * k);
-            }
-            let mx = d[0].max(d[1]).max(d[2]);
-            if mx > peak {
-                let t = ((mx - peak) / (mx - o).max(1e-6)).clamp(0.0, 1.0);
-                d = d.map(|v| v + (o - v) * t);
-            }
+            // --- film simulation (exposure → print → scan) or the tone map on luminance, highlight desaturation
+            let mut d = if let Some(film) = &fp.film {
+                film.apply(c)
+            } else {
+                let yl = luminance_2020(c);
+                let o = tone.apply(yl);
+                let mut d = if yl > 1e-9 { c.map(|v| v * o / yl) } else { [0.0; 3] };
+                let k = tone.chroma_scale(o);
+                if k != 1.0 {
+                    d = d.map(|v| o + (v - o) * k);
+                }
+                let mx = d[0].max(d[1]).max(d[2]);
+                if mx > peak {
+                    let t = ((mx - peak) / (mx - o).max(1e-6)).clamp(0.0, 1.0);
+                    d = d.map(|v| v + (o - v) * t);
+                }
+                d
+            };
 
             // --- colour
             d = ops.apply(d, l_sat, l_hue);

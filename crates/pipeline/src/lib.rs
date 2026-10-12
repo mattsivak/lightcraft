@@ -9,7 +9,8 @@
 //!    straighten, flips; one resample at output resolution; then defringe
 //! 2. scene-linear — white balance, exposure, dehaze, local tone (highlights/shadows), texture,
 //!    clarity, local adjustments (masks)
-//! 3. tone map — contrast / whites / blacks filmic curve on luminance, highlight desaturation
+//! 3. tone map — contrast / whites / blacks filmic curve on luminance, highlight desaturation; or, with film
+//!    simulation on, the film look (`lightcraft_film`: exposure → print → scan) in its place
 //! 4. colour — vibrance, saturation, colour mixer, colour grading, B&W (OkLCh)
 //! 5. display — gamut map to the output space (sRGB unless [`RenderRequest::space`] says otherwise), encode, tone curves (parametric + point), vignette, grain
 //!
@@ -683,6 +684,8 @@ pub(crate) fn for_rows<T: Send>(data: &mut [T], w: usize, f: impl Fn(usize, &mut
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_film;
 #[cfg(test)]
 mod tests_geometry;
 #[cfg(test)]

@@ -21,6 +21,7 @@ pub enum Section {
     Effects,
     Vignette,
     Grain,
+    Film,
     Detail,
     Optics,
     Geometry,
@@ -42,6 +43,7 @@ impl Section {
             Section::Effects => "Effects",
             Section::Vignette => "Vignette",
             Section::Grain => "Grain",
+            Section::Film => "Film",
             Section::Detail => "Detail",
             Section::Optics => "Optics",
             Section::Geometry => "Geometry",
@@ -214,6 +216,10 @@ controls! {
     "grain.amount" => grain.amount, "Grain", Grain, 0, 100, 0, 1, 0, Plain;
     "grain.size" => grain.size, "Size", Grain, 0, 100, 25, 1, 0, Plain;
     "grain.roughness" => grain.roughness, "Roughness", Grain, 0, 100, 50, 1, 0, Plain;
+    "film.exposure" => film.exposure, "Push / Pull", Film, -3, 3, 0, 0.1, 1, Centered;
+    "film.printExposure" => film.print_exposure, "Print Exposure", Film, -1, 1, 0, 0.02, 2, Centered;
+    "film.printMagenta" => film.print_magenta, "Magenta Filter", Film, -30, 30, 0, 1, 0, Centered;
+    "film.printYellow" => film.print_yellow, "Yellow Filter", Film, -30, 30, 0, 1, 0, Centered;
     "enhance.denoise" => enhance.denoise, "Amount", Detail, 0, 100, 0, 1, 0, Plain;
     "detail.sharpenAmount" => detail.sharpen_amount, "Sharpening", Detail, 0, 150, 0, 1, 0, Plain;
     "detail.sharpenRadius" => detail.sharpen_radius, "Radius", Detail, 0.5, 3, 1, 0.1, 1, Plain;

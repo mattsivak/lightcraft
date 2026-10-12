@@ -21,6 +21,19 @@ fn edit(s: &mut Session, c: &str, label: &str, f: impl FnOnce(&mut DevelopSettin
     ok()
 }
 
+/// `develop.film`'s `stock` / `paper`: absent → `None`; otherwise one of `list`'s ids (or `""` when `empty_ok`),
+/// else an error naming the ids it accepts.
+fn film_id_param(p: &Value, key: &str, list: &[lightcraft_film::StockInfo], empty_ok: bool) -> Result<Option<String>> {
+    let Some(v) = p.get(key) else { return Ok(None) };
+    let v = v.as_str().ok_or_else(|| bad("develop.film", format!("`{key}` must be a string")))?;
+    if (empty_ok && v.is_empty()) || list.iter().any(|f| f.id == v) {
+        Ok(Some(v.to_string()))
+    } else {
+        let ids: Vec<_> = list.iter().map(|f| f.id).collect();
+        Err(bad("develop.film", format!("unknown {key} `{v}` (one of: {})", ids.join(", "))))
+    }
+}
+
 fn section_param(p: &Value, c: &str) -> Result<Section> {
     let v = p.get("section").cloned().ok_or_else(|| bad(c, "missing `section`"))?;
     serde_json::from_value(v).map_err(|e| bad(c, e.to_string()))
@@ -712,6 +725,60 @@ pub fn specs() -> Vec<CommandSpec> {
                 })?;
                 Ok(json!({"enabled": enabled, "maxEv": s.develop_of(id).map(|d| d.hdr.max_ev)}))
             }
+        ),
+        // ---- film simulation (issue #988)
+        cmd!(
+            "develop.film",
+            "Film Simulation",
+            [],
+            None,
+            "{enabled?: bool (default: toggle when nothing else is given, else unchanged), stock?: film id (develop.filmStocks), output?: scan|print (how a negative becomes the picture: a lab scan or a print on paper), paper?: paper id for print, \"\" = the stock's own} — film simulation: the photo exposed on a film stock, then lab-scanned or printed, in place of the tone map (Light ▸ Contrast, Whites and Blacks then act on the scan or print: paper grade, white and black points)",
+            has_active,
+            |s, p| {
+                let id = active(s, "develop.film")?;
+                let cur = s.develop_of(id).map(|d| d.film.clone()).unwrap_or_default();
+                let stock = film_id_param(p, "stock", &lightcraft_film::films(), false)?;
+                let paper = film_id_param(p, "paper", &lightcraft_film::papers(), true)?;
+                let output = match p.get("output") {
+                    None => None,
+                    Some(v) => Some(
+                        serde_json::from_value::<lightcraft_develop::FilmOutput>(v.clone())
+                            .map_err(|_| bad("develop.film", "`output` must be \"scan\" or \"print\""))?,
+                    ),
+                };
+                // a non-boolean `enabled` (e.g. "false") is refused rather than read as a toggle; left out, it toggles
+                // only a bare call, so changing the stock, output or paper never switches film off
+                let enabled = match p.get("enabled") {
+                    None if stock.is_none() && paper.is_none() && output.is_none() => !cur.enabled,
+                    None => cur.enabled,
+                    Some(v) => v.as_bool().ok_or_else(|| bad("develop.film", "`enabled` must be true or false"))?,
+                };
+                let label = if enabled { "Film Simulation On" } else { "Film Simulation Off" };
+                edit(s, "develop.film", label, |d| {
+                    d.film.enabled = enabled;
+                    if let Some(st) = stock {
+                        d.film.stock = st;
+                    }
+                    if let Some(pp) = paper {
+                        d.film.paper = pp;
+                    }
+                    if let Some(o) = output {
+                        d.film.output = o;
+                    }
+                    Ok(())
+                })?;
+                let f = s.develop_of(id).map(|d| d.film.clone()).unwrap_or_default();
+                Ok(json!({"enabled": f.enabled, "stock": f.stock, "output": f.output, "paper": f.paper}))
+            }
+        ),
+        cmd!(
+            "develop.filmStocks",
+            "Film Stocks",
+            [],
+            None,
+            "{} — the film stocks and print papers develop.film accepts: {films: [{id, name, kind: negative|positive}], papers: [{id, name, kind}]}",
+            always,
+            |_, _| Ok(json!({"films": lightcraft_film::films(), "papers": lightcraft_film::papers()}))
         ),
         // ---- geometry: Upright
         cmd!(
