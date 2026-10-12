@@ -536,6 +536,17 @@ fn film_section(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings)
             {
                 let _ = app.run("develop.film", json!({"output": key}));
             }
+            let what = if printed {
+                "An optical print on photo paper: punchier, the darkroom look. Paper, print exposure and filters below."
+            } else {
+                "Like a minilab scan (Frontier, Noritsu): soft, colour-corrected, as most film photos are seen today."
+            };
+            ui.add_space(2.0);
+            ui.label(RichText::new(crate::i18n::tr(what)).font(t.font(12.0)).color(t.text_dim));
+        } else if d.film.enabled {
+            ui.add_space(2.0);
+            let what = "Slide film: viewed directly on a light box, no scan or print step.";
+            ui.label(RichText::new(crate::i18n::tr(what)).font(t.font(12.0)).color(t.text_dim));
         }
         egui::Grid::new("filmPaper").num_columns(2).spacing(vec2(10.0, 6.0)).show(ui, |ui| {
             if printed {
@@ -568,7 +579,9 @@ fn film_section(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings)
         }
         egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 2, bottom: 2 }).show(ui, |ui| {
             ui.label(
-                RichText::new(crate::i18n::tr("Light ▸ Contrast, Whites and Blacks act on the scan or print, like paper grade and white and black points. Exposure sets how much light reaches the film."))
+                RichText::new(crate::i18n::tr(
+                    "Exposure (Light panel) sets how much light reaches the film. Contrast, Whites and Blacks act on the result, like paper grade and white and black points.",
+                ))
                     .font(t.font(12.0))
                     .color(t.text_dim),
             );
