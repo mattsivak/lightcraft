@@ -2,7 +2,7 @@
 
 **Stage: alpha** · next: beta, ~14 points and ~340–600 h away
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-11 · **Change:** minor (EOS R5 Mark II CR3 verified; RAW decoding 77%) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-11 · **Change:** minor (film simulation, beyond Lightroom, #988; EOS R5 Mark II CR3 verified; RAW decoding 77%) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 One-page summary of how close LightCraft is to Adobe Lightroom. Agents: read this, then pick work
 from [docs/gaps.md](docs/gaps.md). The full assessment, method and evidence are in
@@ -76,6 +76,11 @@ Hours are calibrated on this repo's PR history; see
 
 Weights and evidence: [target-app-parity.md](docs/target-app-parity.md#features).
 
+Beyond Lightroom, next to profiles and presets as a creative look: **film simulation** (#988, Edit ▸ Film). A
+spectral film → print → scan model of our own with five stocks from spektrafilm (CC BY-SA 4.0 data), CPU only
+for now ([docs/film-simulation.md](docs/film-simulation.md); follow-ups are gap 29). It is not counted in the
+Lightroom percentages above.
+
 ## Languages
 
 Measured from `crates/ui-egui/locales` (share of 2,304 catalog messages translated); none is `full`
@@ -114,6 +119,10 @@ Ranked toward beta; detail in [docs/roadmap.md](docs/roadmap.md), gaps in [docs/
 
 ## Progress log
 
+- 2026-10-11: Film simulation (#988, beyond Lightroom): Kodak Portra 400, Ektar 100 and Gold 200 printed on
+  Portra Endura, and Fujifilm Velvia 100 on a light box, in Edit ▸ Film and `develop.film`. Our own spectral
+  model; stock data from spektrafilm by Andrea Volpato (CC BY-SA 4.0), credited in Help ▸ About ▸ Data. CPU
+  only; headline numbers unchanged.
 - 2026-10-11: Canon EOS R5 Mark II C-RAW decodes from sensor data (57% of its files opened as a
   preview): the CRX QP map's first-symbol literal and limited-length escape; four CC0 R5 Mark II files
   pinned, the QP maps of 33,665 private C-RAW files decode exactly ([cr3.md](docs/cr3.md)). 235 models
@@ -161,6 +170,7 @@ Ranked toward beta; detail in [docs/roadmap.md](docs/roadmap.md), gaps in [docs/
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-11 | minor | Film simulation (#988) noted under Features as beyond Lightroom; progress log entry; headline numbers unchanged |
 | 2026-10-11 | minor | EOS R5 Mark II CR3 verified: CR3 on four verified bodies, RAW decoding 76% → 77%; headline numbers unchanged |
 | 2026-10-10 | minor | RAW measured model by model; RAW decode and colour as explicit rows: full 59% → 61%, mainstream 51% → 49%, essentials 63% → 64%; beta ~14 points |
 | 2026-10-10 | minor | Full ready restored to the additive weighted sum (~59%; method aligned with the standard, no new evidence); hours per audience; beta ~16 points away |

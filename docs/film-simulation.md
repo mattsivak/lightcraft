@@ -1,0 +1,241 @@
+# Film simulation
+
+> **Last updated:** 2026-10-12 · Issue [#988](https://github.com/storytold/lightcraft/issues/988) · Beyond Lightroom
+
+LightCraft can render a photo as if it had been shot on a colour film and then lab-scanned or printed on
+photographic paper (or, for slide film, viewed on a light box). The film model is LightCraft's own, written from published colour
+science. The stock data (spectral sensitivities, dye densities and characteristic curves) are
+[spektrafilm](https://github.com/andreavolpato/spektrafilm) profiles by Andrea Volpato, shipped unmodified under
+CC BY-SA 4.0. No spektrafilm code is used.
+
+## What it does
+
+**Edit ▸ Film** (the section below Effects):
+
+- **Stock**: None, or one of the shipped films. Choosing a film turns film simulation on; None turns it off.
+- **Lab scan / Print** (negatives only): how the negative becomes the picture.
+  - **Lab scan** (the default) renders the negative the way a minilab scanner (Frontier, Noritsu) does: soft
+    contrast, the orange mask removed. Most film photos seen today, and most lab results, are such scans.
+  - **Print** renders an optical print on photo paper under D50: punchier, the darkroom look.
+  - Slide film has neither: it is viewed directly.
+- **Paper** (Print only): the print paper. "Stock's own paper" uses the paper named in the film's data, or Kodak
+  Portra Endura when that paper doesn't ship.
+- **Push / Pull** (−3…+3 stops; control id `film.exposure`): longer or shorter development. It steepens (push) or
+  flattens (pull) the film's densities around mid grey, 12 % per stop, so contrast changes and mid grey keeps its
+  brightness. Brightness is Light ▸ Exposure: there is one exposure control.
+- **Print Exposure** (−1…+1 EV, Print only): more print exposure gives a darker print.
+- **Magenta Filter** / **Yellow Filter** (−30…+30 CC, Print only): enlarger filtration on top of the automatic
+  neutral balance. More magenta makes the print greener, more yellow makes it bluer, as in a darkroom. The filter
+  factor is compensated: the overall print exposure is re-solved so mid grey keeps its brightness, and only the
+  colour changes.
+
+The film stage takes the place of the tone map. As in darkroom and lab tools (paper grade, white and black points),
+**Light ▸ Contrast, Whites and Blacks act on the scan or print**, after the film, pivoting on where scene mid grey
+comes out:
+- **Contrast** is a power around mid grey on luminance (slope ×1.5 at +100, ÷1.5 at −100), with hue kept and mid
+  grey fixed.
+- **Whites** brightens (+, up to ×4) or dims (−, down to ×½) from mid grey up, fully from 0.8. +100 clips from about
+  2.5 stops over grey; the shadows are untouched.
+- **Blacks** lifts (+) or crushes (−) below mid grey, neutrally; the highlights are untouched.
+
+**Light ▸ Exposure** is the light reaching the film. Everything else before the tone map (white balance, highlights /
+shadows, texture / clarity, calibration) still feeds the film, and
+everything after it (vibrance, saturation, the colour mixer, colour grading, B&W conversion, tone curves, vignette,
+grain) still applies to the print. The section's eye switch turns the film
+off for a before/after view; the photo then renders exactly as without film. With HDR editing on, the film look is
+display-referred: it peaks at SDR white.
+
+Agents and the CLI use the same commands:
+
+- `develop.film {enabled?, stock?, output?: scan|print, paper?}` turns film on or off and picks the stock, output
+  and paper. Left out, `enabled` toggles only a bare call; changing the stock, output or paper keeps film as it is.
+  An id that doesn't ship is refused with the list of valid ids.
+- `develop.filmStocks {}` lists the films and papers (`{films: [{id, name, kind}], papers: [...]}`).
+- The sliders are develop controls: `film.exposure`, `film.printExposure`, `film.printMagenta`, `film.printYellow`.
+- The settings live in `DevelopSettings.film` (preset group *Film*). An edit without film doesn't write the key, so
+  edits saved before this feature keep their settings hash and render pixel-identically.
+
+A hand-edited sidecar that names an unknown stock, or a paper as the film, renders without film instead of failing.
+
+## The model
+
+Everything below runs in linear Rec.2020 on a spectral grid of 81 samples, 380–780 nm every 5 nm.
+
+- **Spectral upsampling** (`crates/film/src/basis.rs`).
+  - Three smooth reflectance spectra `b_r, b_g, b_b` that sum to 1. Under D65 their colours are the Rec.2020
+    primaries.
+  - They are the smoothest such set: least squared first differences, solved once in closed form (KKT system).
+  - A linear Rec.2020 colour `(r, g, b)` becomes the reflectance `r·b_r + g·b_g + b·b_b`.
+- **Exposure** (`look.rs`, `exposure_matrix`).
+  - Layer exposure is `E_l = Σ_λ illum_ref(λ) · reflectance(λ) · sens_l(λ)`, with the stock's reference illuminant
+    (D55 for the shipped films). It is linear in RGB, so it becomes a 3×3 matrix per stock.
+  - Rows are scaled so that an 18.4 % grey gives `E_l = 1` (log10 0). Measured: log exposure 0 sits mid-scale on
+    the straight line of every shipped curve (Portra 400 densities 0.68 / 0.70 / 0.86 there, Velvia 0.51 / 0.54 /
+    0.55).
+- **Film density.** `D_l = mid_l + (curve_l(log10 E_l) − mid_l) · (1 + 0.12 · push)`, read from the profile's
+  `density_curves` (density above base); `mid_l = curve_l(0)` is mid grey's density, which push/pull leaves in place.
+- **Contrast, Whites, Blacks** act on the scan, print or slide output afterwards (see above), pivoting on scene mid
+  grey's output luminance.
+- **Negative → paper.**
+  - Negative transmittance: `T(λ) = 10^-(base(λ) + Σ_i D_i · dye_i(λ))`. Measured: `base + Σ D(0) · dye`
+    reproduces each profile's `midscale_neutral_density` with RMS 0.085 (Portra 400), 0.02 (Portra Endura) and
+    0.012 (Velvia 100), so the dye spectra are per unit density.
+  - Paper log exposure: `H_j = log10 Σ_λ lamp(λ) · T(λ) · sens_paper_j(λ)`.
+  - The enlarger lamp is our own approximation: a 3200 K blackbody with a logistic roll-off above 700 nm. It is not
+    measured filter data.
+- **Lab scan** (`look.rs`, `Scanner`; negatives, the default).
+  - The scanner reads the negative in three narrow bands (σ 18 nm) at the stock's cyan, magenta and yellow dye
+    peaks. This is our own approximation of minilab scanner LEDs, not measured data.
+  - It is set up like a lab scanner:
+    - **Black point at the film base.** Each channel's density above the base (the orange mask divided out) is
+      inverted, and clear film is black in every channel, so the floor is neutral.
+    - **One fixed curve for every stock.** Green is read at 0.62 density per decade of exposure, a typical negative's
+      gamma, so a contrastier negative scans contrastier and a flatter one softer.
+    - **Channel balance.** Red and blue follow their own slope relative to green (measured between −0.3 and +0.3
+      log exposure), so greys stay neutral from black to white, balanced per channel at mid grey.
+    - **White four stops over mid grey**, through a soft shoulder (`v·(1 + v/W²)/(1 + v)`, with W solved so mid grey
+      stays at mid grey).
+    - **A colour-correction matrix**, as lab scanners apply, before the shoulder.
+      - Why: the film's layers are not display primaries, and read straight they rotated skies about 20° towards cyan
+        and turned skin pinker.
+      - The matrix is a per-stock 3×3 with rows summing to 1, so greys are untouched. It is fitted when the stock is
+        baked to the 190 measured surface reflectances of rawtoaces-data (`crates/film/src/training_table.rs`,
+        Apache-2.0).
+      - Each surface is lit by the stock's reference light; its ideal film exposure goes through the film curves and
+        the scanner, and is compared with its true colour (Rec.2020, adapted to D65, mid grey = 1).
+      - The fit is least squares in linear light, then refined by damped Gauss–Newton to minimise ΔE in OkLab. Least
+        squares alone shrank colours and traded greens for skies.
+      - Measured mean hue error on those surfaces, without → with the matrix:
+
+        | Stock | Sky / blue | Skin / orange | All colours |
+        |---|---|---|---|
+        | Portra 400 | 24° → 6° | 12° → 6° | 10.5° → 6.3° |
+        | Ektar 100 | 19° → 7° | 14° → 6° | 10.9° → 6.9° |
+        | Gold 200 | 16° → 7° | 11° → 4° | 9.8° → 7.1° |
+
+        Greens are unchanged to about 2° worse.
+      - A soft per-channel scan keeps about 80–90 % of the true chroma; more is Vibrance's job.
+  - The film's own toe and shoulder, and its layer cross-talk, carry through, so stocks still look different.
+- **Neutral print balance.** Per-layer log offsets are chosen so the scanned print of an 18.4 % grey is neutral and
+  keeps the brightness the plain offsets give. Newton's method over three unknowns with a numeric Jacobian. It is an
+  ideal enlarger, not a dichroic filter model.
+- **Print exposure and filtration.** On top of the balance: print exposure adds `EV · log10 2` to every paper layer;
+  magenta CC subtracts `CC / 100` density from the green-sensitive layer's exposure, yellow CC from the
+  blue-sensitive layer's (1 CC = 0.01 density).
+- **Interimage correction** (`look.rs`, `Interimage`; prints).
+  - Why: a print measured against true colours at its own tone was muddy. Greens kept about 60 % of their chroma and
+    turned about 15° towards yellow, and skies rotated about 15°.
+  - The cause, found by swapping print stages for ideal ones one at a time:
+    - mostly the paper's dyes absorbing outside their own band, seen under D50 (about 30 % of chroma);
+    - partly the negative→paper crosstalk.
+    - Not the cause: the enlarger lamp, the neutral balance and the paper's sensitivities. Changing those made it
+      worse.
+  - Real negatives offset this with interlayer (DIR) interimage effects; the model has none of its own, so a correction
+    stands in for them.
+  - How it works:
+    - It acts on the paper's log exposures, normalised so the grey axis stays put:
+      `H' = H_mid + v ⊙ M·((H − H_mid) / v)`, where `v` is the paper layers' log exposure per decade of scene exposure
+      along grey.
+    - `M` is a 3×3 whose rows sum to 1, so grey, mid grey and the neutral balance are unchanged.
+    - `M` is fitted per (film, paper) at bake time, by damped Gauss–Newton on ΔE in OkLab, to the 190 measured
+      surfaces. The target is each surface's true colour scaled to the print's own grey-scale tone, so the print keeps
+      its contrast and only colour is corrected.
+    - It is baked into the paper grid, so it costs nothing per pixel; the bake takes about 17 ms more.
+  - Physically motivated but fitted: these are not measured film data.
+  - Result (measured against the print's tone, without → with):
+
+    | Stock | Sky hue error | Greens: hue error, chroma | All colours |
+    |---|---|---|---|
+    | Portra 400 | 15° → 7° | 16°, ×0.62 → 5.5°, ×1.10 | 10.6° → 5.7°, ΔE 6.1 → 3.2 |
+    | Ektar 100 | 16° → 9° | 13° → 7° | ΔE 6.2 → 3.5 |
+    | Gold 200 | 15° → 7° | 12° → 5° | ΔE 5.9 → 3.3 |
+
+    Skin and red hue are about 1–2° worse. Highlights still desaturate on the paper's toe, which is real print
+    behaviour.
+- **Paper density.** `D'_j = paper_curve_j(H'_j + balance_j + offset_j)`.
+- **Scan / view.**
+  - Reflectance (paper) or transmittance (slide) is `10^-(base + Σ D · dye)`, seen under D50, giving XYZ.
+  - Bradford-adapted from the unexposed base's white to D65, then converted to linear Rec.2020 with the base mapped
+    to 1.0: the paper base is display white.
+  - The output is clamped to 0…1; NaN, infinities and negative inputs give finite output.
+- **Baking and caching.**
+  - The film densities → paper log exposure grid depends only on (film, paper); the paper densities → Rec.2020
+    grid only on the paper; a slide's densities → Rec.2020 grid only on the slide.
+  - A lab scan's densities → Rec.2020 grid depends only on the film.
+  - They are baked once into 33³ grids (trilinear lookup) plus 1-D tables of the curves, and cached per
+    (film, paper or scan) pair. Per pixel a look costs a 3×3 matrix, six 1-D lookups and two trilinear lookups; dragging a
+    film slider never rebakes.
+- **Channel order** (checked against the data): `log_sensitivity` columns are R, G, B (peaks at 645 / 545 / 400 nm
+  on Portra 400); `channel_density` columns are C, M, Y (peaks at 695 / 540 / 450 nm). Slide curves fall with
+  exposure; negative and paper curves rise.
+
+## Stocks
+
+| Id | Name | Kind | Prints on | Data source (from the file's metadata) |
+|---|---|---|---|---|
+| `kodak_portra_400` | Kodak Portra 400 | colour negative | `kodak_portra_endura` | Kodak data sheets, processed by A. Volpato |
+| `kodak_ektar_100` | Kodak Ektar 100 | colour negative | `kodak_portra_endura` | Kodak data sheets, processed by A. Volpato |
+| `kodak_gold_200` | Kodak Gold 200 | colour negative | `kodak_portra_endura` | Kodak data sheets, processed by A. Volpato |
+| `fujifilm_velvia_100` | Fujifilm Velvia 100 | slide (positive) | viewed directly | Fujifilm data sheets, processed by A. Volpato |
+| `kodak_portra_endura` | Kodak Professional Portra Endura | print paper | — | Kodak data sheets, processed by A. Volpato |
+
+Each file's metadata says it was "created by processing raw measurement data from data-sheets and/or scientific
+papers" (Kodak and Fujifilm data sheets, scientific publications and technical material), and that the original
+data are the property of their holders. The films' reference illuminant is D55; the paper's is a tungsten enlarger
+lamp (`TH-KG3`), for which we use our own lamp above.
+
+## Credits and licence
+
+- Stock data: **spektrafilm by Andrea Volpato**, https://github.com/andreavolpato/spektrafilm, licensed
+  [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). The five JSON files are copied unmodified into
+  [`assets/film/spektrafilm/`](../assets/film/spektrafilm/README.md) together with `SPEKTRAFILM_LICENSE.txt`; the
+  README there pins the source commit and each file's SHA-256. They are credited in `NOTICE`,
+  `assets/ATTRIBUTION.md` and Help ▸ About ▸ Data (`lightcraft_film::CREDITS`).
+- Share-alike covers the data only. Any change to those files must be marked (a `CHANGELOG.txt` next to them) and
+  stay CC BY-SA 4.0. LightCraft's code, including the film model, is MIT OR Apache-2.0.
+- **No spektrafilm code is used**, nor any other film-simulation implementation: the model above is written from
+  published colour science (Hunt, *The Reproduction of Colour*; Giorgianni & Madden, *Digital Color Management*)
+  and the data sheets.
+- The author asks, without binding, that the name "spektrafilm" not be used in product branding (the UI calls
+  it "Film"), that the data not be resold, and that they not be used to train commercial AI. We follow these.
+- CIE 1931 colour-matching functions (CIE, CC-BY-4.0, via rawtoaces-data) and the CIE daylight basis functions
+  (CIE 15:2004, via colour-science, BSD-3-Clause) are in `crates/film/src/cie_table.rs`, generated by
+  `tools/film_cie_table.py`.
+
+## Limits (phase 1)
+
+- **CPU only.** The GPU path declines film renders, so a photo with film on renders on the CPU.
+- No halation, film grain or interlayer (DIR) couplers yet. Effects ▸ Grain still applies its own grain.
+- An ideal enlarger with a per-layer neutral balance, not dichroic filters.
+- Generic spectral upsampling from Rec.2020, not the camera's measured sensitivities.
+- Five stocks.
+
+The follow-ups are tracked in [gaps.md](gaps.md) (film simulation entry).
+
+## Developer notes
+
+| Stage | Where |
+|---|---|
+| Spectral grid, CIE tables, illuminants, enlarger lamp | `crates/film/src/spectrum.rs`, `cie_table.rs` |
+| Profile parsing and validation (`Stock`, `Kind`, `Curve`) | `crates/film/src/profile.rs` |
+| Built-in stocks, lookup and lists | `crates/film/src/stocks.rs` |
+| Upsampling basis | `crates/film/src/basis.rs` |
+| 1-D tables and 3-D grids | `crates/film/src/grid.rs` |
+| Exposure, print, scan, neutral balance, cache, `Look::apply` | `crates/film/src/look.rs` |
+| Settings, controls, preset group | `crates/develop/src/settings.rs` (`Film`), `controls.rs` (`film.*`), `presets.rs` |
+| Commands | `crates/engine/src/cmd/develop.rs` (`develop.film`, `develop.filmStocks`) |
+| Render: film stage in place of the tone map | `crates/pipeline/src/finish.rs` (`film_look`, `FinishParams.film`) |
+| GPU decline | `crates/engine/src/media.rs` |
+| Edit ▸ Film section | `crates/ui-egui/src/panels/edit.rs` (`film_section`) |
+| Credits | `crates/film/src/lib.rs` (`CREDITS`), Help ▸ About ▸ Data |
+
+**Adding a stock:**
+
+1. Copy the profile JSON **unmodified** from spektrafilm into `assets/film/spektrafilm/` (a modified file needs a
+   `CHANGELOG.txt` entry and stays CC BY-SA).
+2. Add its `include_str!` to `BUILTIN` in `crates/film/src/stocks.rs`.
+3. Add a row with its SHA-256 to `assets/film/spektrafilm/README.md`, and name it in `CREDITS`, `NOTICE` and the
+   `assets/ATTRIBUTION.md` row if they list the stocks.
+4. Pass the three stock tests (`cargo test -p lightcraft-film stocks`): `every_builtin_stock_parses`,
+   `every_stock_has_rgb_layers_and_cmy_dyes` and `dyes_reproduce_the_midscale_neutral`. Then check the look tests
+   (`look::tests`) for the new stock, e.g. that a negative prints mid-grey neutral.
