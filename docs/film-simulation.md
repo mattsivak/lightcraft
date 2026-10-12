@@ -1,9 +1,9 @@
 # Film simulation
 
-> **Last updated:** 2026-10-11 · Issue [#988](https://github.com/storytold/lightcraft/issues/988) · Beyond Lightroom
+> **Last updated:** 2026-10-12 · Issue [#988](https://github.com/storytold/lightcraft/issues/988) · Beyond Lightroom
 
-LightCraft can render a photo as if it had been shot on a colour film, printed on photographic paper and scanned
-(or, for slide film, viewed on a light box). The film model is LightCraft's own, written from published colour
+LightCraft can render a photo as if it had been shot on a colour film and then lab-scanned or printed on
+photographic paper (or, for slide film, viewed on a light box). The film model is LightCraft's own, written from published colour
 science. The stock data (spectral sensitivities, dye densities and characteristic curves) are
 [spektrafilm](https://github.com/andreavolpato/spektrafilm) profiles by Andrea Volpato, shipped unmodified under
 CC BY-SA 4.0. No spektrafilm code is used.
@@ -13,15 +13,23 @@ CC BY-SA 4.0. No spektrafilm code is used.
 **Edit ▸ Film** (the section below Effects):
 
 - **Stock**: None, or one of the shipped films. Choosing a film turns film simulation on; None turns it off.
-- **Paper** (negatives only): the print paper. "Stock's own paper" uses the paper named in the film's data, or Kodak
-  Portra Endura when that paper doesn't ship. Slide film has no paper: it is viewed directly.
+- **Lab scan / Print** (negatives only): how the negative becomes the picture.
+  - **Lab scan** (the default) renders the negative the way a minilab scanner (Frontier, Noritsu) does: soft
+    contrast, the orange mask removed. Most film photos seen today, and most lab results, are such scans.
+  - **Print** renders an optical print on photo paper under D50: punchier, the darkroom look.
+  - Slide film has neither: it is viewed directly.
+- **Paper** (Print only): the print paper. "Stock's own paper" uses the paper named in the film's data, or Kodak
+  Portra Endura when that paper doesn't ship.
 - **Film Exposure** (−3…+3 EV): exposes the film more or less, on top of Light ▸ Exposure.
-- **Print Exposure** (−2…+2 EV, negatives only): more print exposure gives a darker print.
-- **Magenta Filter** / **Yellow Filter** (−100…+100 CC, negatives only): enlarger filtration on top of the automatic
+- **Print Exposure** (−2…+2 EV, Print only): more print exposure gives a darker print.
+- **Magenta Filter** / **Yellow Filter** (−100…+100 CC, Print only): enlarger filtration on top of the automatic
   neutral balance. More magenta makes the print greener, more yellow makes it bluer, as in a darkroom.
 
-The film stage takes the place of the tone map. Its curves set the contrast and the end points, so **Contrast,
-Whites and Blacks don't apply** while film is on (their sliders are disabled). Everything before the tone map
+The film stage takes the place of the tone map. **Light ▸ Contrast, Whites and Blacks** then shape the light
+*before it reaches the film*, as a single gain per pixel (hue and saturation kept). Contrast scales the scene's log
+exposure around mid grey (×1.5 at +100, ÷1.5 at −100), so −Contrast is like a flatter, pulled film. Whites moves the
+light from one stop over grey upwards (up to ±1.5 stops). Blacks moves the light from 2.5 stops under grey downwards
+(+ lifts it). The film's own curves still give the toe and shoulder. Everything else before the tone map
 (white balance, exposure, highlights / shadows, texture / clarity, calibration) still feeds the film, and
 everything after it (vibrance, saturation, the colour mixer, colour grading, B&W conversion, tone curves, vignette,
 grain) still applies to the print. The section's eye switch turns the film
@@ -30,8 +38,9 @@ display-referred: it peaks at SDR white.
 
 Agents and the CLI use the same commands:
 
-- `develop.film {enabled?, stock?, paper?}` turns film on or off and picks the stock and paper. An id that doesn't
-  ship is refused with the list of valid ids.
+- `develop.film {enabled?, stock?, output?: scan|print, paper?}` turns film on or off and picks the stock, output
+  and paper. Left out, `enabled` toggles only a bare call; changing the stock, output or paper keeps film as it is.
+  An id that doesn't ship is refused with the list of valid ids.
 - `develop.filmStocks {}` lists the films and papers (`{films: [{id, name, kind}], papers: [...]}`).
 - The sliders are develop controls: `film.exposure`, `film.printExposure`, `film.printMagenta`, `film.printYellow`.
 - The settings live in `DevelopSettings.film` (preset group *Film*). An edit without film doesn't write the key, so
@@ -63,6 +72,15 @@ Everything below runs in linear Rec.2020 on a spectral grid of 81 samples, 380�
   - Paper log exposure: `H_j = log10 Σ_λ lamp(λ) · T(λ) · sens_paper_j(λ)`.
   - The enlarger lamp is our own approximation: a 3200 K blackbody with a logistic roll-off above 700 nm. It is not
     measured filter data.
+- **Lab scan** (`look.rs`, `Scanner`; negatives, the default).
+  - The scanner reads the negative in three narrow bands at 650, 545 and 450 nm (σ 18 nm). This is our own
+    approximation of minilab scanner LEDs, not measured data.
+  - Each channel's density above the film base (the orange mask divided out) is inverted against the film's own
+    slope in that channel, measured between −0.3 and +0.3 log exposure.
+  - Mid grey comes out neutral at mid grey; the result is scaled by 0.9 in log exposure (a little flat, as lab scans
+    are).
+  - A soft shoulder (`v·(1 + v/36)/(1 + v)`) maps 6 × to white.
+  - The film's own toe and shoulder, and its layer cross-talk, carry through, so stocks still look different.
 - **Neutral print balance.** Per-layer log offsets are chosen so the scanned print of an 18.4 % grey is neutral and
   keeps the brightness the plain offsets give. Newton's method over three unknowns with a numeric Jacobian. It is an
   ideal enlarger, not a dichroic filter model.
@@ -78,8 +96,9 @@ Everything below runs in linear Rec.2020 on a spectral grid of 81 samples, 380�
 - **Baking and caching.**
   - The film densities → paper log exposure grid depends only on (film, paper); the paper densities → Rec.2020
     grid only on the paper; a slide's densities → Rec.2020 grid only on the slide.
+  - A lab scan's densities → Rec.2020 grid depends only on the film.
   - They are baked once into 33³ grids (trilinear lookup) plus 1-D tables of the curves, and cached per
-    (film, paper) pair. Per pixel a look costs a 3×3 matrix, six 1-D lookups and two trilinear lookups; dragging a
+    (film, paper or scan) pair. Per pixel a look costs a 3×3 matrix, six 1-D lookups and two trilinear lookups; dragging a
     film slider never rebakes.
 - **Channel order** (checked against the data): `log_sensitivity` columns are R, G, B (peaks at 645 / 545 / 400 nm
   on Portra 400); `channel_density` columns are C, M, Y (peaks at 695 / 540 / 450 nm). Slide curves fall with

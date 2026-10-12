@@ -54,3 +54,21 @@ fn film_stocks_lists_films_and_papers() {
     assert_eq!(r["films"][3]["kind"], "positive");
     assert_eq!(r["papers"][0]["id"], "kodak_portra_endura");
 }
+
+/// `output` picks lab scan or print; changing it (or the stock or paper) without `enabled` never switches film
+/// off, while a bare call still toggles.
+#[test]
+fn film_output_switches_without_toggling() {
+    let (mut s, id) = active_demo();
+    s.execute("develop.film", &json!({"enabled": true, "stock": "kodak_portra_400"})).unwrap();
+    assert_eq!(s.develop_of(id).unwrap().film.output, lightcraft_develop::FilmOutput::Scan, "lab scan by default");
+    let r = s.execute("develop.film", &json!({"output": "print"})).unwrap();
+    assert_eq!((r["enabled"].clone(), r["output"].clone()), (json!(true), json!("print")));
+    let r = s.execute("develop.film", &json!({"stock": "kodak_gold_200"})).unwrap();
+    assert_eq!(r["enabled"], true, "a stock change keeps film on");
+    for bad in [json!({"output": "lab"}), json!({"output": 1})] {
+        let e = s.execute("develop.film", &bad).unwrap_err().to_string();
+        assert!(e.contains("output"), "{bad}: {e}");
+    }
+    assert_eq!(s.execute("develop.film", &json!({})).unwrap()["enabled"], false, "a bare call toggles");
+}

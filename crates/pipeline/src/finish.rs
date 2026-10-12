@@ -304,11 +304,19 @@ pub fn film_look(s: &DevelopSettings) -> Option<lightcraft_film::Look> {
     }
     lightcraft_film::look(&lightcraft_film::LookParams {
         stock: f.stock.clone(),
+        output: match f.output {
+            lightcraft_develop::FilmOutput::Scan => lightcraft_film::Output::Scan,
+            lightcraft_develop::FilmOutput::Print => lightcraft_film::Output::Print,
+        },
         paper: f.paper.clone(),
         exposure_ev: f.exposure,
         print_exposure_ev: f.print_exposure,
         print_magenta: f.print_magenta,
         print_yellow: f.print_yellow,
+        // the tone map's Contrast, Whites and Blacks shape the light before the film instead
+        contrast: s.light.contrast,
+        whites: s.light.whites,
+        blacks: s.light.blacks,
     })
     .ok()
 }

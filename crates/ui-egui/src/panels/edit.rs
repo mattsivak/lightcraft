@@ -186,10 +186,9 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
 
     section(app, ui, &d, "light", "Light", |app, ui, d| {
         hdr_row(app, ui, d);
-        // with film simulation on, the film and paper curves stand in for the tone map's Contrast, Whites and Blacks
-        let film = d.film.enabled && d.section_enabled("film");
+        // with film simulation on, Contrast, Whites and Blacks shape the light before the film (`lightcraft_film`)
         for c in ["light.exposure", "light.contrast", "light.highlights", "light.shadows", "light.whites", "light.blacks"] {
-            control(app, ui, d, c, !(film && matches!(c, "light.contrast" | "light.whites" | "light.blacks")));
+            control(app, ui, d, c, true);
         }
         ui.add_space(6.0);
         if d.hdr.enabled {
@@ -504,6 +503,7 @@ fn film_section(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings)
     let own_paper = crate::i18n::tr("Stock's own paper");
     let shown = if d.film.enabled { films.iter().find(|f| f.id == d.film.stock).map_or(d.film.stock.as_str(), |f| f.name) } else { none };
     let negative = d.film.enabled && films.iter().any(|f| f.id == d.film.stock && f.kind == lightcraft_film::Kind::Negative);
+    let printed = negative && d.film.output == lightcraft_develop::FilmOutput::Print;
     egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 4, bottom: 4 }).show(ui, |ui| {
         // the combos fill what the labels leave, so the section never widens the panel
         let combo_w = (ui.available_width() - 56.0).max(80.0);
@@ -523,7 +523,22 @@ fn film_section(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings)
             register(ui.ctx(), "combo:filmStock", combo.response.rect);
             combo.response.on_hover_text(shown);
             ui.end_row();
-            if negative {
+        });
+        // a negative is lab-scanned (soft, like most film photos today) or printed on paper (punchier)
+        if negative {
+            ui.add_space(4.0);
+            use lightcraft_develop::FilmOutput as O;
+            let outputs = [(O::Scan, "Lab scan", "scan"), (O::Print, "Print", "print")];
+            let items: Vec<(&str, &str)> = outputs.iter().map(|(_, l, k)| (*l, *k)).collect();
+            let active = outputs.iter().position(|(o, _, _)| *o == d.film.output);
+            if let Some(i) = crate::widgets::segmented(ui, "filmOutput", &items, active, 2)
+                && let Some((_, _, key)) = outputs.get(i)
+            {
+                let _ = app.run("develop.film", json!({"output": key}));
+            }
+        }
+        egui::Grid::new("filmPaper").num_columns(2).spacing(vec2(10.0, 6.0)).show(ui, |ui| {
+            if printed {
                 let papers = lightcraft_film::papers();
                 let paper = papers.iter().find(|p| p.id == d.film.paper).map_or(own_paper, |p| p.name);
                 ui.label(RichText::new(crate::i18n::tr("Paper")).font(t.font(13.0)).color(t.text_dim));
@@ -545,7 +560,7 @@ fn film_section(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings)
     });
     if d.film.enabled {
         control(app, ui, d, "film.exposure", true);
-        if negative {
+        if printed {
             sub_title(ui, "Print");
             control(app, ui, d, "film.printExposure", true);
             control(app, ui, d, "film.printMagenta", true);
@@ -553,7 +568,9 @@ fn film_section(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings)
         }
         egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 2, bottom: 2 }).show(ui, |ui| {
             ui.label(
-                RichText::new(crate::i18n::tr("Contrast, Whites and Blacks are set by the film and paper.")).font(t.font(12.0)).color(t.text_dim),
+                RichText::new(crate::i18n::tr("Light ▸ Contrast, Whites and Blacks shape the light before it reaches the film."))
+                    .font(t.font(12.0))
+                    .color(t.text_dim),
             );
         });
     }

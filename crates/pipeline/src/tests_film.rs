@@ -34,6 +34,28 @@ fn film_changes_the_render_and_off_is_untouched() {
     assert_ne!(slide.image.data, on.image.data);
 }
 
+/// With film on, Light ▸ Contrast, Whites and Blacks still act (on the light before the film), and a lab scan and a
+/// print are different renders.
+#[test]
+fn light_sliders_shape_the_film_and_scan_differs_from_print() {
+    let src = sunset();
+    let req = RenderRequest::fit(240, 240);
+    let base = film("kodak_portra_400");
+    let plain = render(&src, &raw(), &base, &req).image.data;
+    for (k, v) in [("contrast", -60.0), ("whites", 50.0), ("blacks", 50.0)] {
+        let mut s = base.clone();
+        match k {
+            "contrast" => s.light.contrast = v,
+            "whites" => s.light.whites = v,
+            _ => s.light.blacks = v,
+        }
+        assert_ne!(render(&src, &raw(), &s, &req).image.data, plain, "Light ▸ {k} does nothing with film on");
+    }
+    let mut print = base.clone();
+    print.film.output = lightcraft_develop::FilmOutput::Print;
+    assert_ne!(render(&src, &raw(), &print, &req).image.data, plain);
+}
+
 #[test]
 fn a_grey_card_prints_grey() {
     let src = Rgb32f::filled(64, 64, [0.184, 0.184, 0.184]);

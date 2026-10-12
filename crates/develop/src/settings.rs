@@ -614,15 +614,29 @@ impl Default for Grain {
     }
 }
 
-/// Film simulation (issue #988): the photo exposed on a film stock, printed and scanned, in place of the tone map
-/// (`lightcraft_film`). Not written while it is the default, so settings without it keep their JSON and `hash64`.
+/// How film simulation turns a negative into the picture (slides are always viewed directly).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FilmOutput {
+    /// A minilab scan of the negative: soft, as most film photos seen today.
+    #[default]
+    Scan,
+    /// An optical print on photo paper: punchier, the darkroom look.
+    Print,
+}
+
+/// Film simulation (issue #988): the photo exposed on a film stock, then lab-scanned or printed, in place of the tone
+/// map (`lightcraft_film`); Light ▸ Contrast, Whites and Blacks shape the light before the film. Not written while it
+/// is the default, so settings without it keep their JSON and `hash64`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Film {
     pub enabled: bool,
     /// Film stock id (`lightcraft_film::films`), e.g. `kodak_portra_400`.
     pub stock: String,
-    /// Print paper id for a negative; empty = the stock's own paper.
+    /// Lab scan or print, for a negative.
+    pub output: FilmOutput,
+    /// Print paper id for a printed negative; empty = the stock's own paper.
     pub paper: String,
     /// Film exposure, EV −3..3 (after Light ▸ Exposure).
     pub exposure: f64,
@@ -638,6 +652,7 @@ impl Default for Film {
         Self {
             enabled: false,
             stock: "kodak_portra_400".into(),
+            output: FilmOutput::Scan,
             paper: String::new(),
             exposure: 0.0,
             print_exposure: 0.0,
@@ -1224,7 +1239,7 @@ impl DevelopSettings {
 
 #[cfg(test)]
 mod film_tests {
-    use crate::{DevelopSettings, Film, SettingsGroup, apply_partial, controls, extract_groups};
+    use crate::{DevelopSettings, Film, FilmOutput, SettingsGroup, apply_partial, controls, extract_groups};
 
     #[test]
     fn settings_without_film_keep_their_json() {
@@ -1238,11 +1253,14 @@ mod film_tests {
     #[test]
     fn film_settings_round_trip() {
         let s = DevelopSettings {
-            film: Film { enabled: true, stock: "kodak_ektar_100".into(), print_magenta: 12.0, ..Film::default() },
+            film: Film { enabled: true, stock: "kodak_ektar_100".into(), output: FilmOutput::Print, print_magenta: 12.0, ..Film::default() },
             ..DevelopSettings::default()
         };
-        let back = DevelopSettings::from_json(&s.to_json()).unwrap();
+        let j = s.to_json();
+        assert_eq!(j["film"]["output"], "print");
+        let back = DevelopSettings::from_json(&j).unwrap();
         assert_eq!(back.film, s.film);
+        assert_eq!(Film::default().output, FilmOutput::Scan, "a lab scan unless print is chosen");
     }
 
     #[test]

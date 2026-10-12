@@ -13,7 +13,7 @@ mod profile;
 pub mod spectrum;
 mod stocks;
 
-pub use look::{Look, LookParams, look};
+pub use look::{Look, LookParams, Output, look};
 pub use profile::{Curve, Kind, Stock};
 pub use stocks::{DEFAULT_PAPER, StockInfo, films, papers, stock};
 

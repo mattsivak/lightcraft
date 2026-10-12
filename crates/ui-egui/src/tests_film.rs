@@ -39,7 +39,7 @@ fn film_section_never_widens_the_panel() {
     let mut h = edit_panel();
     let r = h.request("ui.set", json!({"openSections": ["light", "film"]}), T);
     assert_eq!(r["ok"], true, "{r}");
-    film(&mut h, json!({"enabled": true, "stock": "kodak_ektar_100"}));
+    film(&mut h, json!({"enabled": true, "stock": "kodak_ektar_100", "output": "print"}));
     let right = |h: &Headless, id: &str| h.app.widgets.iter().find(|(w, _)| w == id).map(|(_, r)| r.right()).unwrap();
     let edge = right(&h, "slider:light.exposure");
     for id in ["slider:film.exposure", "slider:film.printExposure", "slider:film.printMagenta", "slider:film.printYellow"] {
@@ -50,20 +50,35 @@ fn film_section_never_widens_the_panel() {
     }
 }
 
-/// Edit ▸ Film: choosing a stock turns film simulation on and shows the print controls; a slide film has no
-/// print controls.
+/// Edit ▸ Film: choosing a negative turns film simulation on as a lab scan with the Lab scan / Print switch; Print
+/// adds the paper and print controls; a slide film has neither. Contrast, Whites and Blacks stay usable.
 #[test]
 fn film_section_shows_the_controls_for_the_stock() {
     let mut h = edit_panel();
+    let r = h.request("ui.set", json!({"openSections": ["light", "film"]}), T);
+    assert_eq!(r["ok"], true, "{r}");
     h.snapshot(SETTLE);
     assert!(on_screen(&h, "combo:filmStock"));
     assert!(!on_screen(&h, "slider:film.exposure"), "film off: no sliders");
     film(&mut h, json!({"enabled": true, "stock": "kodak_gold_200"}));
-    for id in ["combo:filmPaper", "slider:film.exposure", "slider:film.printExposure", "slider:film.printMagenta", "slider:film.printYellow"] {
+    for id in ["slider:film.exposure", "button:filmOutput-scan", "button:filmOutput-print"] {
         assert!(on_screen(&h, id), "{id} not on screen");
     }
-    // `enabled` omitted would toggle film off (develop.film): a stock change passes it, as the combo does
-    film(&mut h, json!({"enabled": true, "stock": "fujifilm_velvia_100"}));
+    assert!(!on_screen(&h, "combo:filmPaper") && !on_screen(&h, "slider:film.printExposure"), "a lab scan has no paper");
+    let r = h.request("ui.clickWidget", json!({"id": "button:filmOutput-print"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.snapshot(SETTLE);
+    h.snapshot(SETTLE);
+    for id in ["combo:filmPaper", "slider:film.printExposure", "slider:film.printMagenta", "slider:film.printYellow"] {
+        assert!(on_screen(&h, id), "{id} not on screen after choosing Print");
+    }
+    film(&mut h, json!({"stock": "fujifilm_velvia_100"}));
     assert!(on_screen(&h, "slider:film.exposure"));
-    assert!(!on_screen(&h, "slider:film.printExposure") && !on_screen(&h, "combo:filmPaper"), "a slide is not printed");
+    assert!(!on_screen(&h, "button:filmOutput-print") && !on_screen(&h, "combo:filmPaper"), "a slide is viewed directly");
+    // the Light sliders shape the light before the film: not greyed out
+    let r = h.request("ui.clickWidget", json!({"id": "slider:light.contrast", "fx": 0.8}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.snapshot(SETTLE);
+    let id = h.app.session.active().unwrap();
+    assert!(h.app.session.develop_of(id).unwrap().light.contrast > 10.0, "Contrast moves with film on");
 }

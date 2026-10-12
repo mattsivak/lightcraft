@@ -732,18 +732,27 @@ pub fn specs() -> Vec<CommandSpec> {
             "Film Simulation",
             [],
             None,
-            "{enabled?: bool (default: toggle), stock?: film id (develop.filmStocks), paper?: paper id, \"\" = the stock's own} — film simulation: the photo exposed on a film stock, printed and scanned, in place of the tone map (Contrast, Whites and Blacks don't apply while it is on)",
+            "{enabled?: bool (default: toggle when nothing else is given, else unchanged), stock?: film id (develop.filmStocks), output?: scan|print (how a negative becomes the picture: a lab scan or a print on paper), paper?: paper id for print, \"\" = the stock's own} — film simulation: the photo exposed on a film stock, then lab-scanned or printed, in place of the tone map (Light ▸ Contrast, Whites and Blacks shape the light before the film)",
             has_active,
             |s, p| {
                 let id = active(s, "develop.film")?;
                 let cur = s.develop_of(id).map(|d| d.film.clone()).unwrap_or_default();
-                // a non-boolean `enabled` (e.g. "false") is refused rather than read as a toggle
-                let enabled = match p.get("enabled") {
-                    None => !cur.enabled,
-                    Some(v) => v.as_bool().ok_or_else(|| bad("develop.film", "`enabled` must be true or false"))?,
-                };
                 let stock = film_id_param(p, "stock", &lightcraft_film::films(), false)?;
                 let paper = film_id_param(p, "paper", &lightcraft_film::papers(), true)?;
+                let output = match p.get("output") {
+                    None => None,
+                    Some(v) => Some(
+                        serde_json::from_value::<lightcraft_develop::FilmOutput>(v.clone())
+                            .map_err(|_| bad("develop.film", "`output` must be \"scan\" or \"print\""))?,
+                    ),
+                };
+                // a non-boolean `enabled` (e.g. "false") is refused rather than read as a toggle; left out, it toggles
+                // only a bare call, so changing the stock, output or paper never switches film off
+                let enabled = match p.get("enabled") {
+                    None if stock.is_none() && paper.is_none() && output.is_none() => !cur.enabled,
+                    None => cur.enabled,
+                    Some(v) => v.as_bool().ok_or_else(|| bad("develop.film", "`enabled` must be true or false"))?,
+                };
                 let label = if enabled { "Film Simulation On" } else { "Film Simulation Off" };
                 edit(s, "develop.film", label, |d| {
                     d.film.enabled = enabled;
@@ -753,10 +762,13 @@ pub fn specs() -> Vec<CommandSpec> {
                     if let Some(pp) = paper {
                         d.film.paper = pp;
                     }
+                    if let Some(o) = output {
+                        d.film.output = o;
+                    }
                     Ok(())
                 })?;
                 let f = s.develop_of(id).map(|d| d.film.clone()).unwrap_or_default();
-                Ok(json!({"enabled": f.enabled, "stock": f.stock, "paper": f.paper}))
+                Ok(json!({"enabled": f.enabled, "stock": f.stock, "output": f.output, "paper": f.paper}))
             }
         ),
         cmd!(

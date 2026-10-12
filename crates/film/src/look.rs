@@ -1,6 +1,7 @@
-//! A film look: our film → print → scan model (see `docs/film-simulation.md`) for one stock, paper and set of
-//! print settings. The spectral work is baked per (film, paper) into two 3-D grids and cached, so per pixel a look
-//! costs a 3×3 matrix, six 1-D tables and two trilinear lookups, and moving a film slider never rebakes.
+//! A film look: our film → lab scan or film → print model (see `docs/film-simulation.md`) for one stock, output and
+//! set of settings. The spectral work is baked per (film, paper or scan) into 3-D grids and cached, so per pixel a
+//! look costs a 3×3 matrix, a few 1-D tables and one or two trilinear lookups, and moving a film slider never
+//! rebakes.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -19,15 +20,34 @@ const MID_GREY: f64 = 0.184;
 const GRID: usize = 33;
 /// Samples of each baked characteristic curve.
 const CURVE_SAMPLES: usize = 1024;
-/// (film, paper) pairs kept baked.
+/// (film, paper or scan) pairs kept baked.
 const CACHE: usize = 6;
+/// Cache key of a negative's lab scan (paper ids are lower-case words, never this).
+const SCAN_KEY: &str = "@scan";
+/// A lab scan's contrast relative to the scene (in log exposure): a little flat, as minilab scans are.
+const SCAN_CONTRAST: f64 = 0.9;
+/// Linear level a lab scan's soft shoulder maps to white.
+const SCAN_WHITE: f64 = 6.0;
 
-/// What a look is built from (the `film.*` develop settings).
+/// How a negative becomes the picture (slides are always viewed directly).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Output {
+    /// Scanned the way a minilab scanner does: each channel inverted, the orange mask taken out, soft contrast. Most
+    /// film photos seen today are such scans.
+    #[default]
+    Scan,
+    /// Printed on photo paper with an enlarger and viewed under D50: punchier, the darkroom look.
+    Print,
+}
+
+/// What a look is built from (the `film.*` develop settings and Light ▸ Contrast, Whites, Blacks).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LookParams {
     /// Film stock id ([`crate::films`]).
     pub stock: String,
-    /// Paper id for a negative; empty = the stock's own paper if it ships, else [`DEFAULT_PAPER`].
+    /// Lab scan or print, for a negative.
+    pub output: Output,
+    /// Paper id for a printed negative; empty = the stock's own paper if it ships, else [`DEFAULT_PAPER`].
     pub paper: String,
     /// Film exposure, EV.
     pub exposure_ev: f64,
@@ -36,6 +56,10 @@ pub struct LookParams {
     /// Enlarger filtration on top of the neutral balance, CC (1 CC = 0.01 density).
     pub print_magenta: f64,
     pub print_yellow: f64,
+    /// Contrast, Whites and Blacks (−100..100) applied to the light before it reaches the film ([`pre_tone`]).
+    pub contrast: f64,
+    pub whites: f64,
+    pub blacks: f64,
 }
 
 /// What depends on the stocks only.
@@ -48,7 +72,7 @@ struct Baked {
 enum Path {
     /// Negative: densities → paper log exposure, balance, paper curves, paper densities → colour.
     Print { to_paper: Grid3, balance: [f32; 3], paper_curves: [Table1; 3], scan: Grid3 },
-    /// Slide: densities → colour on a light box.
+    /// Slide on a light box, or a negative's lab scan: densities → colour.
     Direct { view: Grid3 },
 }
 
@@ -58,11 +82,13 @@ pub struct Look {
     baked: Arc<Baked>,
     gain: f32,
     print_offset: [f32; 3],
+    /// Contrast, Whites, Blacks before the film, −1..1.
+    pre: [f32; 3],
 }
 
 impl std::fmt::Debug for Look {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Look").field("gain", &self.gain).field("print_offset", &self.print_offset).finish_non_exhaustive()
+        f.debug_struct("Look").field("gain", &self.gain).field("print_offset", &self.print_offset).field("pre", &self.pre).finish_non_exhaustive()
     }
 }
 
@@ -70,7 +96,7 @@ impl Look {
     /// Linear Rec.2020 (scene) → display-linear Rec.2020 in 0..1 (the paper or slide base is white).
     pub fn apply(&self, rgb: [f32; 3]) -> [f32; 3] {
         let b = &*self.baked;
-        let c = rgb.map(|v| if v.is_finite() { v.max(0.0) } else { 0.0 });
+        let c = pre_tone(rgb.map(|v| if v.is_finite() { v.max(0.0) } else { 0.0 }), self.pre);
         let m = &b.to_exposure;
         let le: [f32; 3] = std::array::from_fn(|l| ((m[l][0] * c[0] + m[l][1] * c[1] + m[l][2] * c[2]) * self.gain).max(1e-7).log10());
         let d: [f32; 3] = std::array::from_fn(|l| b.film_curves[l].eval(le[l]));
@@ -86,13 +112,37 @@ impl Look {
     }
 }
 
+fn smooth(a: f32, b: f32, x: f32) -> f32 {
+    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Light ▸ Contrast, Whites and Blacks (`pre`, −1..1 each) on the scene light before it reaches the film, as one gain
+/// per pixel (hue and saturation kept): Contrast scales log exposure around mid grey (×1.5 at +1, ÷1.5 at −1),
+/// Whites moves the light from 1 stop over grey up (up to ±1.5 stops), Blacks the light from 2.5 stops under grey
+/// down (+ lifts it).
+fn pre_tone(c: [f32; 3], pre: [f32; 3]) -> [f32; 3] {
+    let [con, wh, bl] = pre;
+    if con == 0.0 && wh == 0.0 && bl == 0.0 {
+        return c;
+    }
+    let y = 0.2627 * c[0] + 0.6780 * c[1] + 0.0593 * c[2];
+    if y.is_nan() || y <= 1e-9 {
+        return c;
+    }
+    let l = (y / MID_GREY as f32).log2();
+    let delta = l * (1.5f32.powf(con) - 1.0) + wh * 1.5 * smooth(1.0, 4.5, l) + bl * 1.5 * (1.0 - smooth(-6.0, -2.5, l));
+    let g = delta.clamp(-8.0, 8.0).exp2();
+    c.map(|v| v * g)
+}
+
 /// The look for `p`, baking its stocks on first use.
 pub fn look(p: &LookParams) -> Result<Look, FilmError> {
     let film = stock(&p.stock).ok_or_else(|| FilmError::UnknownStock(p.stock.clone()))?;
-    let paper = match film.kind {
-        Kind::Paper => return Err(FilmError::NotAFilm(film.id.clone())),
-        Kind::Positive => None,
-        Kind::Negative => {
+    let paper = match (film.kind, p.output) {
+        (Kind::Paper, _) => return Err(FilmError::NotAFilm(film.id.clone())),
+        (Kind::Positive, _) | (Kind::Negative, Output::Scan) => None,
+        (Kind::Negative, Output::Print) => {
             let id = if p.paper.is_empty() {
                 film.target_print.as_deref().filter(|t| stock(t).is_some()).unwrap_or(DEFAULT_PAPER)
             } else {
@@ -105,15 +155,22 @@ pub fn look(p: &LookParams) -> Result<Look, FilmError> {
             Some(paper)
         }
     };
-    let baked = cached(&film.id, paper.map_or("", |q| q.id.as_str()), || bake(film, paper))?;
+    let key = match (film.kind, paper) {
+        (_, Some(q)) => q.id.as_str(),
+        (Kind::Negative, None) => SCAN_KEY,
+        _ => "",
+    };
+    let baked = cached(&film.id, key, || bake(film, paper))?;
     let ev = |v: f64| if v.is_finite() { v.clamp(-10.0, 10.0) } else { 0.0 };
     let cc = |v: f64| if v.is_finite() { v.clamp(-200.0, 200.0) / 100.0 } else { 0.0 };
+    let unit = |v: f64| if v.is_finite() { (v / 100.0).clamp(-1.0, 1.0) as f32 } else { 0.0 };
     let pe = ev(p.print_exposure_ev) * std::f64::consts::LOG10_2;
     Ok(Look {
         baked,
         gain: 2f64.powf(ev(p.exposure_ev)) as f32,
         // red-sensitive layer: exposure only; green: less light through more magenta; blue: through more yellow
         print_offset: [pe as f32, (pe - cc(p.print_magenta)) as f32, (pe - cc(p.print_yellow)) as f32],
+        pre: [unit(p.contrast), unit(p.whites), unit(p.blacks)],
     })
 }
 
@@ -143,6 +200,10 @@ fn bake(film: &Stock, paper: Option<&Stock>) -> Result<Baked, FilmError> {
     let film_curves = film.curves.each_ref().map(table);
     let (lo, hi) = density_box(&film.curves);
     let path = match paper {
+        None if film.kind == Kind::Negative => {
+            let s = Scanner::new(film)?;
+            Path::Direct { view: Grid3::bake(GRID, lo, hi, |d| s.view(film, d))? }
+        }
         None => {
             let v = Viewer::new(film)?;
             Path::Direct { view: Grid3::bake(GRID, lo, hi, |d| v.view(film, d))? }
@@ -223,6 +284,65 @@ impl Viewer {
     }
 }
 
+/// A minilab scanner reading a negative: three narrow bands at 650, 545 and 450 nm (σ 18 nm; our own approximation
+/// of scanner LEDs, not measured data). Each channel's density above the film base (the orange mask divided out) is
+/// inverted against the film's own slope there, balanced so mid grey comes out neutral at mid grey, with
+/// [`SCAN_CONTRAST`] and a soft shoulder to white.
+struct Scanner {
+    channels: [Spectrum; 3],
+    base: [f64; 3],
+    mid: [f64; 3],
+    slope: [f64; 3],
+    gain: f64,
+}
+
+impl Scanner {
+    fn new(neg: &Stock) -> Result<Scanner, FilmError> {
+        let channels = [650.0, 545.0, 450.0]
+            .map(|c: f64| -> Spectrum { std::array::from_fn(|i| (-0.5 * ((spectrum::wavelength(i) - c) / 18.0).powi(2)).exp()) });
+        let t0 = transmittance(neg, [0.0; 3]);
+        let base: [f64; 3] = std::array::from_fn(|k| spectrum::dot(&channels[k], &t0));
+        if base.iter().any(|b| !(b.is_finite() && *b > 0.0)) {
+            return Err(FilmError::Profile(format!("{}: the base passes no light to the scanner", neg.id)));
+        }
+        let mut s = Scanner { channels, base, mid: [0.0; 3], slope: [1.0; 3], gain: 1.0 };
+        let at = |le: f64| neg.curves.each_ref().map(|c| c.eval(le));
+        let (lo, hi) = (s.density(neg, at(-0.3)), s.density(neg, at(0.3)));
+        s.mid = s.density(neg, at(0.0));
+        s.slope = std::array::from_fn(|k| ((hi[k] - lo[k]) / 0.6).max(0.05));
+        // pre-scale so mid grey comes out at mid grey after the shoulder (shoulder(g·grey) = grey, g in 1..4)
+        let (mut a, mut b) = (1.0, 4.0);
+        for _ in 0..60 {
+            let m = 0.5 * (a + b);
+            if shoulder(m * MID_GREY) < MID_GREY {
+                a = m;
+            } else {
+                b = m;
+            }
+        }
+        s.gain = 0.5 * (a + b);
+        Ok(s)
+    }
+
+    /// Scan densities above the film base (the orange mask divided out).
+    fn density(&self, neg: &Stock, d: [f64; 3]) -> [f64; 3] {
+        let t = transmittance(neg, d);
+        std::array::from_fn(|k| -(spectrum::dot(&self.channels[k], &t) / self.base[k]).max(1e-30).log10())
+    }
+
+    /// The scanned, inverted colour of a negative with layer densities `d` (linear Rec.2020).
+    fn view(&self, neg: &Stock, d: [f64; 3]) -> [f64; 3] {
+        let dn = self.density(neg, d);
+        std::array::from_fn(|k| shoulder(self.gain * MID_GREY * 10f64.powf(SCAN_CONTRAST * (dn[k] - self.mid[k]) / self.slope[k])))
+    }
+}
+
+/// A lab scan's soft shoulder: linear near black, [`SCAN_WHITE`] maps to 1.
+fn shoulder(v: f64) -> f64 {
+    let v = v.max(0.0);
+    v * (1.0 + v / (SCAN_WHITE * SCAN_WHITE)) / (1.0 + v)
+}
+
 /// Per-layer log offsets so the print of a mid-grey negative (`lh`: its paper log exposures) is neutral, at the
 /// brightness the plain offsets `-lh` give. Newton's method with a numeric Jacobian; `-lh` if it can't converge.
 fn neutral_balance(lh: [f64; 3], paper: &Stock, v: &Viewer) -> [f32; 3] {
@@ -259,7 +379,7 @@ mod tests {
     use super::*;
 
     fn params(stock: &str) -> LookParams {
-        LookParams { stock: stock.into(), ..Default::default() }
+        LookParams { stock: stock.into(), output: Output::Print, ..Default::default() }
     }
 
     fn luma(c: [f32; 3]) -> f32 {
@@ -346,6 +466,93 @@ mod tests {
         let a = look(&params("kodak_ektar_100")).unwrap();
         let b = look(&LookParams { print_exposure_ev: 0.3, print_yellow: -10.0, exposure_ev: 0.5, ..params("kodak_ektar_100") }).unwrap();
         assert!(Arc::ptr_eq(&a.baked, &b.baked));
+        let c = look(&LookParams { contrast: 40.0, whites: -20.0, blacks: 10.0, ..params("kodak_ektar_100") }).unwrap();
+        assert!(Arc::ptr_eq(&a.baked, &c.baked), "Contrast, Whites and Blacks don't rebake");
+    }
+
+    fn scan(stock: &str) -> LookParams {
+        LookParams { stock: stock.into(), output: Output::Scan, ..Default::default() }
+    }
+
+    /// Log-luminance spread of the output between a scene 2 stops over and 2 stops under mid grey.
+    fn contrast_of(l: &Look) -> f32 {
+        let g = MID_GREY as f32;
+        (luma(l.apply([g * 4.0; 3])) / luma(l.apply([g / 4.0; 3]))).log2()
+    }
+
+    #[test]
+    fn lab_scans_are_the_default_neutral_and_mid_grey() {
+        assert_eq!(LookParams::default().output, Output::Scan);
+        for id in ["kodak_portra_400", "kodak_ektar_100", "kodak_gold_200"] {
+            let l = look(&scan(id)).unwrap();
+            let g = l.apply([MID_GREY as f32; 3]);
+            assert!(spread(g) < 0.005, "{id}: {g:?}");
+            assert!((luma(g) - MID_GREY as f32).abs() < 0.01, "{id}: mid grey scans to {g:?}");
+            for v in [0.03f32, 0.6] {
+                assert!(spread(l.apply([v; 3])) < 0.05, "{id} grey {v}: {:?}", l.apply([v; 3]));
+            }
+        }
+    }
+
+    /// The reason lab scans exist here: a scan is softer than a print on paper.
+    #[test]
+    fn lab_scans_are_flatter_than_prints() {
+        for id in ["kodak_portra_400", "kodak_ektar_100", "kodak_gold_200"] {
+            let (s, p) = (contrast_of(&look(&scan(id)).unwrap()), contrast_of(&look(&params(id)).unwrap()));
+            assert!(s > 1.0 && s < p, "{id}: scan spans {s} stops over ±2 scene stops, print {p}");
+        }
+    }
+
+    #[test]
+    fn lab_scans_keep_order_hue_and_range() {
+        let l = look(&scan("kodak_portra_400")).unwrap();
+        let ys: Vec<f32> = [0.005f32, 0.02, 0.08, 0.184, 0.5, 1.5, 6.0].iter().map(|&v| luma(l.apply([v; 3]))).collect();
+        assert!(ys.windows(2).all(|w| w[1] >= w[0] - 1e-4), "{ys:?}");
+        let r = l.apply([0.4, 0.05, 0.05]);
+        assert!(r[0] > r[1] && r[0] > r[2], "{r:?}");
+        let b = l.apply([0.03, 0.06, 0.4]);
+        assert!(b[2] > b[0] && b[2] > b[1], "{b:?}");
+        for p in [[f32::NAN; 3], [f32::INFINITY; 3], [1e6; 3], [0.0; 3]] {
+            assert!(l.apply(p).iter().all(|c| c.is_finite() && (0.0..=1.0).contains(c)), "{p:?}");
+        }
+    }
+
+    #[test]
+    fn scan_and_print_are_baked_apart_and_slides_ignore_the_output() {
+        let s = look(&scan("kodak_gold_200")).unwrap();
+        let p = look(&params("kodak_gold_200")).unwrap();
+        assert!(!Arc::ptr_eq(&s.baked, &p.baked));
+        let vs = look(&scan("fujifilm_velvia_100")).unwrap();
+        let vp = look(&params("fujifilm_velvia_100")).unwrap();
+        assert!(Arc::ptr_eq(&vs.baked, &vp.baked), "a slide is viewed directly either way");
+        // a scan has no paper: a paper id that isn't one is no error there
+        assert!(look(&LookParams { paper: "kodak_ektar_100".into(), ..scan("kodak_portra_400") }).is_ok());
+    }
+
+    /// Light ▸ Contrast, Whites and Blacks shape the light before the film.
+    #[test]
+    fn contrast_whites_and_blacks_act_before_the_film() {
+        for base in [scan("kodak_portra_400"), params("kodak_portra_400")] {
+            let plain = look(&base).unwrap();
+            let flat = look(&LookParams { contrast: -100.0, ..base.clone() }).unwrap();
+            let punchy = look(&LookParams { contrast: 100.0, ..base.clone() }).unwrap();
+            let (c0, c_lo, c_hi) = (contrast_of(&plain), contrast_of(&flat), contrast_of(&punchy));
+            assert!(c_lo < c0 && c0 < c_hi, "{:?}: contrast {c_lo} / {c0} / {c_hi}", base.output);
+            // mid grey stays put under Contrast
+            let g = [MID_GREY as f32; 3];
+            assert!((luma(flat.apply(g)) - luma(plain.apply(g))).abs() < 0.005);
+            let hi = [MID_GREY as f32 * 8.0; 3];
+            let lo = [MID_GREY as f32 / 16.0; 3];
+            let whites = look(&LookParams { whites: -100.0, ..base.clone() }).unwrap();
+            assert!(luma(whites.apply(hi)) < luma(plain.apply(hi)) - 0.01, "Whites − darkens highlights");
+            assert!((luma(whites.apply(lo)) - luma(plain.apply(lo))).abs() < 0.002, "Whites leaves shadows");
+            let blacks = look(&LookParams { blacks: 100.0, ..base.clone() }).unwrap();
+            let (lifted, base_lo) = (luma(blacks.apply(lo)), luma(plain.apply(lo)));
+            assert!(lifted > base_lo * 1.1, "Blacks + lifts shadows: {base_lo} -> {lifted}");
+            assert!((luma(blacks.apply(hi)) - luma(plain.apply(hi))).abs() < 0.002, "Blacks leaves highlights");
+        }
+        let wild = look(&LookParams { contrast: f64::NAN, whites: 1e300, blacks: f64::NEG_INFINITY, ..scan("kodak_gold_200") }).unwrap();
+        assert!(wild.apply([0.2; 3]).iter().all(|c| c.is_finite()));
     }
 
     fn dummy_baked() -> Result<Baked, FilmError> {
