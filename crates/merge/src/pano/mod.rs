@@ -11,13 +11,16 @@
 //!    offset, so the veiling flare of frames facing the sun (light added, not multiplied) is taken
 //!    out too instead of leaving their shadows lifted next to the other frames'.
 //! 5. Seams: each canvas pixel belongs to the image whose centre-weighted feather weight is
-//!    highest there (Voronoi-like seams away from image borders); multi-band blending in log space
-//!    ([`blend`]).
+//!    highest there (Voronoi-like seams away from image borders); what one gain and offset per frame
+//!    leave there (the sky's gradient, flare growing towards the sun) is leveled on a coarse grid
+//!    ([`level`]); multi-band blending in log space ([`blend`]).
 //! 6. Boundary warp, auto crop, fill edges ([`finish`]).
 
 pub mod blend;
 pub mod camera;
 pub mod finish;
+mod level;
+mod vignette;
 pub mod project;
 
 use lightcraft_raster::{Plane, Rgb32f};
@@ -74,6 +77,9 @@ pub struct PanoResult {
     pub cameras: Vec<Option<Camera>>,
     /// Per-input exposure gains applied.
     pub gains: Vec<f64>,
+    /// The residual vignetting divided out of every frame: `ln V = c₁r² + c₂r⁴ + c₃r⁶` for the radius
+    /// `r` from a frame's centre (1 at its corners); `None` when the overlaps didn't give one.
+    pub vignette: Option<[f64; 3]>,
     /// Per-input black offsets subtracted after the gain (veiling flare, in output units; 0 for the
     /// frame with the least).
     pub offsets: Vec<f64>,
@@ -171,6 +177,8 @@ struct Tile {
     rgb: Vec<[f32; 3]>,
     /// Feather weight (0 = outside the image).
     wgt: Vec<f32>,
+    /// Squared radius from the frame's centre, normalised to 1 at its corners, × 65535 ([`vignette`]).
+    r2: Vec<u16>,
 }
 
 /// Register the frames: cameras for the connected set.
@@ -290,7 +298,9 @@ pub fn stitch(mut frames: Vec<Frame>, opts: &PanoOptions, progress: &Progress) -
             let (fw, fh) = (fr.width() as f64, fr.height() as f64);
             let mut rgb = vec![[0f32; 3]; tw * th];
             let mut wgt = vec![0f32; tw * th];
-            rgb.par_chunks_mut(tw).zip(wgt.par_chunks_mut(tw)).enumerate().for_each(|(ty, (row, wrow))| {
+            let mut r2 = vec![0u16; tw * th];
+            let diag2 = fw * fw + fh * fh;
+            rgb.par_chunks_mut(tw).zip(wgt.par_chunks_mut(tw)).zip(r2.par_chunks_mut(tw)).enumerate().for_each(|(ty, ((row, wrow), rrow))| {
                 let v = (ty0 + ty) as f64 + 0.5 + oy;
                 for tx in 0..tw {
                     let u = (tx0 + tx) as f64 + 0.5 + ox;
@@ -304,12 +314,21 @@ pub fn stitch(mut frames: Vec<Frame>, opts: &PanoOptions, progress: &Progress) -
                     let w = (wx * wy).max(1e-6) as f32;
                     row[tx] = fr.image.sample_bilinear(px as f32, py as f32);
                     wrow[tx] = w;
+                    let (dx, dy) = (2.0 * px - fw, 2.0 * py - fh);
+                    rrow[tx] = ((dx * dx + dy * dy) / diag2 * u16::MAX as f64).round().clamp(0.0, u16::MAX as f64) as u16;
                 }
             });
-            Some(Tile { x0: tx0, y0: ty0, w: tw, h: th, rgb, wgt })
+            Some(Tile { x0: tx0, y0: ty0, w: tw, h: th, rgb, wgt, r2 })
         })
         .collect();
     check(progress, 0.6, "Exposure compensation")?;
+    // the vignetting the frames' own correction left (shared by all, fitted from the overlaps), divided out first
+    let mut tiles = tiles;
+    let clips: Vec<f32> = frames.iter().map(|f| f.clip).collect();
+    let vignette = vignette::estimate(&tiles, &clips);
+    if let Some(c) = &vignette {
+        vignette::correct(&mut tiles, c);
+    }
     let offsets = compensate_exposure(&tiles, &mut gains, &frames);
     // the tiles hold every pixel the blend needs: the frames' own go now, before the blend
     // takes its memory (12 bytes a pixel of every photo: 3 GB for five 51 MP frames)
@@ -346,18 +365,43 @@ pub fn stitch(mut frames: Vec<Frame>, opts: &PanoOptions, progress: &Progress) -
         let _ = std::fs::write(path, pgm);
     }
     check(progress, 0.7, "Blending")?;
+    // each frame as the blend takes it: gain, then the flare offset in the camera's white (flare is the light's colour,
+    // not grey in camera RGB: equal R, G and B pushed a channel of dark pixels to zero, a pink seam), never more than
+    // half a pixel's value
+    let neutral: Vec<[f32; 3]> = frames
+        .iter()
+        .map(|f| {
+            let n = match &f.color {
+                FrameColor::Camera(c) => c.as_shot_neutral.unwrap_or([1.0; 3]).map(|v| v as f32),
+                FrameColor::Linear { .. } => [1.0; 3],
+            };
+            let l = 0.25 * n[0] + 0.6 * n[1] + 0.15 * n[2];
+            if l > 0.0 && n.iter().all(|v| v.is_finite() && *v > 0.0) { n.map(|v| v / l) } else { [1.0; 3] }
+        })
+        .collect();
+    let compensate = |i: usize, p: [f32; 3]| -> [f32; 3] {
+        let (g, o) = (gains.get(i).copied().unwrap_or(1.0) as f32, offsets.get(i).copied().unwrap_or(0.0) as f32);
+        let n = neutral.get(i).copied().unwrap_or([1.0; 3]);
+        std::array::from_fn(|c| {
+            let v = p[c] * g;
+            (v - o * n[c]).max(0.5 * v)
+        })
+    };
+    // what one gain and offset per frame leave at the seams (the sky's gradient, flare that grows towards the sun)
+    let leveling = level::level(&tiles, &label, pw, ph, compensate);
     let mut blender = Blender::new(pw, ph, levels);
     for (i, t) in tiles.into_iter().enumerate() {
         let Some(t) = t else { continue };
-        let (g, o) = (gains[i] as f32, offsets.get(i).copied().unwrap_or(0.0) as f32);
         let mut vals = Buf::new(t.w, t.h, 3);
         let mut mask = Buf::new(t.w, t.h, 1);
         for ty in 0..t.h {
             for tx in 0..t.w {
                 let k = ty * t.w + tx;
                 if t.wgt[k] > 0.0 {
+                    let v = compensate(i, t.rgb[k]);
+                    let u = leveling.at(i, t.x0 + tx, t.y0 + ty);
                     for c in 0..3 {
-                        vals.data[k * 3 + c] = (t.rgb[k][c] * g - o).max(1e-6).ln();
+                        vals.data[k * 3 + c] = v[c].max(1e-6).ln() + u[c];
                     }
                 }
                 if label[(t.y0 + ty) * pw + t.x0 + tx] == i as u16 {
@@ -405,6 +449,7 @@ pub fn stitch(mut frames: Vec<Frame>, opts: &PanoOptions, progress: &Progress) -
         used,
         cameras: cams,
         gains,
+        vignette,
         offsets,
         rms_before,
         rms,

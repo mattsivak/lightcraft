@@ -257,6 +257,7 @@ fn pano_info(r: &lightcraft_merge::PanoResult, sources: &[(PhotoId, String)], as
         "rmsPx": r.rms,
         "gains": r.gains,
         "offsets": r.offsets,
+        "vignette": r.vignette,
         "crop": r.crop,
         "megapixels": megapixels,
         "nativeMegapixels": native,
