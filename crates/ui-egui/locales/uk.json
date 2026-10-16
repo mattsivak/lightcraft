@@ -2332,5 +2332,14 @@
   "Reading focus points": "Читання точок фокусування",
   "LightCraft lost its graphics device": "LightCraft втратив графічний пристрій",
   "The graphics driver stopped responding, so LightCraft can't draw its window any more. Your library and edits are saved.\n\nRestart LightCraft to continue.": "Графічний драйвер перестав відповідати, тому LightCraft більше не може малювати своє вікно. Вашу бібліотеку та редагування збережено.\n\nПерезапустіть LightCraft, щоб продовжити.",
-  "Restart": "Перезапустити"
+  "Restart": "Перезапустити",
+  "Click to type a value": "Клацніть, щоб ввести значення",
+  "Run face models on the CPU only": "Запускати моделі облич лише на ЦП",
+  "Detection": "Виявлення",
+  "Recognition": "Розпізнавання",
+  "Not loaded yet": "Ще не завантажено",
+  "Checking the GPU…": "Перевірка ГП…",
+  "CPU": "ЦП",
+  "A face model uses the GPU only when a check shows it gives the same results faster.": "Модель облич використовує ГП, лише якщо перевірка показала, що він дає ті самі результати швидше.",
+  "Checking the GPU for faces": "Перевірка ГП для облич"
 }

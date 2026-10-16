@@ -2334,5 +2334,14 @@
   "Reading focus points": "Leyendo puntos de enfoque",
   "LightCraft lost its graphics device": "LightCraft ha perdido su dispositivo gráfico",
   "The graphics driver stopped responding, so LightCraft can't draw its window any more. Your library and edits are saved.\n\nRestart LightCraft to continue.": "El controlador gráfico ha dejado de responder, así que LightCraft ya no puede dibujar su ventana. Su biblioteca y sus ediciones están guardadas.\n\nReinicie LightCraft para continuar.",
-  "Restart": "Reiniciar"
+  "Restart": "Reiniciar",
+  "Click to type a value": "Hacer clic para escribir un valor",
+  "Run face models on the CPU only": "Ejecutar los modelos de caras solo en la CPU",
+  "Detection": "Detección",
+  "Recognition": "Reconocimiento",
+  "Not loaded yet": "Aún no cargado",
+  "Checking the GPU…": "Comprobando la GPU…",
+  "CPU": "CPU",
+  "A face model uses the GPU only when a check shows it gives the same results faster.": "Un modelo de caras usa la GPU solo cuando una comprobación muestra que da los mismos resultados más rápido.",
+  "Checking the GPU for faces": "Comprobando la GPU para las caras"
 }
