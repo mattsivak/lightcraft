@@ -4,7 +4,7 @@
 
 ### Running tasks and messages stay out of the way
 - Imports, exports and other background tasks no longer float over the folder list. A ring around the bell at the
-  top right shows their progress, with the task's name beside it when the window has room; click the bell for each
+  top left, next to the back and forward arrows, shows their progress, with the task's name beside it when the window has room; click the bell for each
   task's row and ✕. The bell also keeps the recent messages (a dot says new ones came), so a message that faded
   can still be read.
 - An import whose Lightroom XMP settings couldn't all be applied says so in one line ("Lightroom settings not

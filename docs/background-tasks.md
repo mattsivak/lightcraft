@@ -1,7 +1,7 @@
 # Long-running tasks and the activity stack
 
-Everything that takes a while runs off the UI thread and shows up in **one** place: the bell at the right of the
-top bar (issue #345). Nothing floats over the photos or the sidebar while a task runs: a ring around the bell shows
+Everything that takes a while runs off the UI thread and shows up in **one** place: the bell at the left of the
+top bar, after back / forward (issue #345). Nothing floats over the photos or the sidebar while a task runs: a ring around the bell shows
 how far the tasks have got (a segment sweeps while the amount of work isn't known) and, where the bar has room, the
 task's name and count sit beside it. Clicking the bell (or `view.activity`) opens a popover with a row per task — its
 name, a progress bar, the count and what it's working on, and ✕ if it can stop — and the recent notifications below.

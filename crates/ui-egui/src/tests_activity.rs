@@ -106,11 +106,13 @@ fn a_running_task_shows_on_the_bell_not_over_the_library() {
     assert!(!has(&h, "activity:popover"));
     let bell = rect(&h, "icon:bell");
     assert!(bell.bottom() <= crate::theme::Tokens::get(&h.view.ctx).top_bar_h + 1.0, "in the top bar: {bell:?}");
-    // a click on the bell opens the popover under it, at the right
+    // at the left, where the activity stack used to be, and clear of the right-hand icons
+    assert!(bell.left() < rect(&h, "field:search").left(), "left of the search field: {bell:?}");
+    // a click on the bell opens the popover under it, from its left edge
     click(&mut h, "icon:bell");
     assert!(h.app.notifications.open);
     let popover = rect(&h, "activity:popover");
-    assert!(popover.top() >= bell.bottom() && (popover.right() - bell.right()).abs() < 1.0, "{popover:?} under {bell:?}");
+    assert!(popover.top() >= bell.bottom() && (popover.left() - bell.left()).abs() < 1.0, "{popover:?} under {bell:?}");
     assert!(has(&h, &format!("activity:row:{}", g.id())));
     drop(g);
     h.step();

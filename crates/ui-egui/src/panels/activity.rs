@@ -97,25 +97,28 @@ fn arc(p: &egui::Painter, c: Pos2, r: f32, from: f32, sweep: f32, stroke: Stroke
     p.add(egui::Shape::line(points, stroke));
 }
 
-/// The bell in the top bar at `r` (`room_left`: where the free space left of it begins). Draws the ring, the dot
-/// and the running task's name; a click opens or closes the popover.
-pub fn bell(app: &mut LightcraftApp, ui: &mut egui::Ui, r: Rect, room_left: f32) {
+/// The bell at the left of the top bar, laid out next in `ui` (a left-to-right row), with up to `label_room` points
+/// right of it for the running task's name. Draws the ring, the dot and the name; a click opens or closes the
+/// popover.
+pub fn bell(app: &mut LightcraftApp, ui: &mut egui::Ui, label_room: f32) {
     let t = Tokens::get(ui.ctx());
+    let (r, _) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::hover());
     let tasks = visible(app);
     if !app.session.activity.list().is_empty() {
         // look again soon: a young task becomes due, bars move
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
     }
     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("activity-bell"), r));
-    // the name and count left of the bell, when the bar has room for them
+    // the name and count right of the bell, when the bar has room for them
     let mut hit = r;
     if !tasks.is_empty() {
-        let room = (r.left() - 6.0 - room_left).min(LABEL_MAX_W);
+        let room = label_room.min(LABEL_MAX_W);
         if room >= 70.0 {
             let mut job = egui::text::LayoutJob::simple_singleline(label_text(&tasks), t.font(12.0), t.text_dim);
             job.wrap = egui::text::TextWrapping::truncate_at_width(room);
             let g = ui.painter().layout_job(job);
-            let lr = Rect::from_min_size(pos2(r.left() - 4.0 - g.size().x, r.center().y - g.size().y / 2.0), g.size());
+            let (slot, _) = ui.allocate_exact_size(vec2(g.size().x + 2.0, 28.0), Sense::hover());
+            let lr = Rect::from_min_size(pos2(slot.left() + 2.0, slot.center().y - g.size().y / 2.0), g.size());
             ui.painter().galley(lr.min, g, t.text_dim);
             register(ui.ctx(), "activity:label", lr);
             hit = hit.union(lr.expand2(vec2(4.0, 6.0)));
@@ -183,7 +186,7 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context) {
     let mut details = None;
     let mut clear = false;
     let screen = ctx.content_rect();
-    let left = (bell.right() - WIDTH).clamp(screen.left() + 8.0, (screen.right() - WIDTH - 8.0).max(screen.left()));
+    let left = bell.left().clamp(screen.left() + 8.0, (screen.right() - WIDTH - 8.0).max(screen.left()));
     let max_h = (screen.bottom() - bell.bottom() - 24.0).max(120.0);
     let frame = egui::Frame::NONE
         .fill(t.chrome)
