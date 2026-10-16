@@ -6,9 +6,10 @@
 //!    straightened ([`camera`]).
 //! 3. Projection: spherical, cylindrical or perspective (rectilinear), or chosen automatically
 //!    from the field of view ([`choose_projection`]).
-//! 4. Exposure compensation: EXIF exposure, then per-image gains solved from the mean intensities
-//!    of every overlap (Brown & Lowe's gain compensation, a small linear least-squares problem
-//!    with a prior pulling gains towards 1).
+//! 4. Exposure compensation: EXIF exposure, then a gain and a black offset per image solved from
+//!    every overlap ([`compensate_exposure`]): Brown & Lowe's gain compensation extended to an
+//!    offset, so the veiling flare of frames facing the sun (light added, not multiplied) is taken
+//!    out too instead of leaving their shadows lifted next to the other frames'.
 //! 5. Seams: each canvas pixel belongs to the image whose centre-weighted feather weight is
 //!    highest there (Voronoi-like seams away from image borders); multi-band blending in log space
 //!    ([`blend`]).
@@ -73,6 +74,9 @@ pub struct PanoResult {
     pub cameras: Vec<Option<Camera>>,
     /// Per-input exposure gains applied.
     pub gains: Vec<f64>,
+    /// Per-input black offsets subtracted after the gain (veiling flare, in output units; 0 for the
+    /// frame with the least).
+    pub offsets: Vec<f64>,
     /// Bundle adjustment RMS reprojection error (pixels) before/after.
     pub rms_before: f64,
     pub rms: f64,
@@ -306,7 +310,7 @@ pub fn stitch(mut frames: Vec<Frame>, opts: &PanoOptions, progress: &Progress) -
         })
         .collect();
     check(progress, 0.6, "Exposure compensation")?;
-    compensate_gains(&tiles, &mut gains, &frames);
+    let offsets = compensate_exposure(&tiles, &mut gains, &frames);
     // the tiles hold every pixel the blend needs: the frames' own go now, before the blend
     // takes its memory (12 bytes a pixel of every photo: 3 GB for five 51 MP frames)
     for f in &mut frames {
@@ -329,11 +333,23 @@ pub fn stitch(mut frames: Vec<Frame>, opts: &PanoOptions, progress: &Progress) -
             }
         }
     }
+    // diagnostics: the seams (which frame each canvas pixel comes from) as a ¼-size PGM
+    if let Some(path) = std::env::var_os("LIGHTCRAFT_SEAMS") {
+        let (sw, sh) = (cw / 4, ch / 4);
+        let mut pgm = format!("P5\n{sw} {sh}\n255\n").into_bytes();
+        for y in 0..sh {
+            for x in 0..sw {
+                let l = label.get(y * 4 * pw + x * 4).copied().unwrap_or(u16::MAX);
+                pgm.push(if l == u16::MAX { 0 } else { (40 + 50 * (l as usize % 5)) as u8 });
+            }
+        }
+        let _ = std::fs::write(path, pgm);
+    }
     check(progress, 0.7, "Blending")?;
     let mut blender = Blender::new(pw, ph, levels);
     for (i, t) in tiles.into_iter().enumerate() {
         let Some(t) = t else { continue };
-        let g = gains[i] as f32;
+        let (g, o) = (gains[i] as f32, offsets.get(i).copied().unwrap_or(0.0) as f32);
         let mut vals = Buf::new(t.w, t.h, 3);
         let mut mask = Buf::new(t.w, t.h, 1);
         for ty in 0..t.h {
@@ -341,7 +357,7 @@ pub fn stitch(mut frames: Vec<Frame>, opts: &PanoOptions, progress: &Progress) -
                 let k = ty * t.w + tx;
                 if t.wgt[k] > 0.0 {
                     for c in 0..3 {
-                        vals.data[k * 3 + c] = (t.rgb[k][c] * g).max(1e-6).ln();
+                        vals.data[k * 3 + c] = (t.rgb[k][c] * g - o).max(1e-6).ln();
                     }
                 }
                 if label[(t.y0 + ty) * pw + t.x0 + tx] == i as u16 {
@@ -389,6 +405,7 @@ pub fn stitch(mut frames: Vec<Frame>, opts: &PanoOptions, progress: &Progress) -
         used,
         cameras: cams,
         gains,
+        offsets,
         rms_before,
         rms,
         fov,
@@ -402,80 +419,101 @@ pub fn stitch(mut frames: Vec<Frame>, opts: &PanoOptions, progress: &Progress) -
     })
 }
 
-/// Gain compensation (Brown & Lowe §6): minimise
-/// Σᵢⱼ Nᵢⱼ [ (gᵢ Īᵢⱼ − gⱼ Īⱼᵢ)² / σN² + (1 − gᵢ/g⁰ᵢ)² / σg² ] over the overlaps, with intensities
-/// relative to the mean overlap level (σN = 0.1; σg = 1, a weak prior that only fixes the overall
-/// level) and `g⁰` the EXIF-based gains.
-fn compensate_gains(tiles: &[Option<Tile>], gains: &mut [f64], frames: &[Frame]) {
+/// Brightness bins each overlap's paired pixels are averaged into.
+const EXPOSURE_BINS: usize = 8;
+
+/// Exposure compensation: a gain `gᵢ` and a black offset `oᵢ` per image, `v' = gᵢ·v − oᵢ`.
+///
+/// In every overlap the pixels both images see (unclipped) are paired, sorted by brightness and
+/// averaged in [`EXPOSURE_BINS`] bins of equal count: pairs of levels `(aₖ, bₖ)` from shadows to
+/// highlights. Minimised, in units of the mean overlap level `M`:
+/// Σ wₖ (gᵢ aₖ − oᵢ − gⱼ bₖ + oⱼ)² / σN² + Σ Wᵢ [ (gᵢ/g⁰ᵢ − 1)² / σg² + oᵢ² / σo² ]
+/// (σN = 0.1; σg = 1 and σo = 0.2, weak priors that only fix the overall level and offset; `g⁰`
+/// the EXIF-based gains). Brown & Lowe's gain compensation matched the overlaps' means only: a frame
+/// facing the sun records the scene plus veiling flare, a pure gain lines up its midtones and leaves
+/// its shadows lifted, a visible step at the seams. Offsets are then made relative to the frame
+/// with the least (flare only ever adds light), so only the extra is taken out. Returns the offsets
+/// (in output units); on failure the EXIF gains stay and every offset is 0.
+fn compensate_exposure(tiles: &[Option<Tile>], gains: &mut [f64], frames: &[Frame]) -> Vec<f64> {
     let n = tiles.len();
+    let none = vec![0f64; n];
     let lum = |p: [f32; 3]| 0.25 * p[0] as f64 + 0.6 * p[1] as f64 + 0.15 * p[2] as f64;
-    let mut nij = vec![0f64; n * n];
-    let mut iij = vec![0f64; n * n];
+    // (i, j, aₖ, bₖ, weight) for i < j
+    let mut pairs: Vec<(usize, usize, f64, f64, f64)> = Vec::new();
     for i in 0..n {
         let Some(a) = &tiles[i] else { continue };
-        for j in 0..n {
-            let Some(b) = tiles[j].as_ref().filter(|_| i != j) else { continue };
+        for j in i + 1..n {
+            let Some(b) = &tiles[j] else { continue };
             let (x0, y0) = (a.x0.max(b.x0), a.y0.max(b.y0));
             let (x1, y1) = ((a.x0 + a.w).min(b.x0 + b.w), (a.y0 + a.h).min(b.y0 + b.h));
-            let (mut cnt, mut sum) = (0usize, 0f64);
+            let mut v: Vec<(f64, f64)> = Vec::new();
             for y in (y0..y1).step_by(2) {
                 for x in (x0..x1).step_by(2) {
                     let ka = (y - a.y0) * a.w + x - a.x0;
                     let kb = (y - b.y0) * b.w + x - b.x0;
-                    if a.wgt[ka] > 0.0 && b.wgt[kb] > 0.0 {
-                        let pa = a.rgb[ka];
-                        if pa.iter().any(|v| *v >= frames[i].clip * 0.95) || b.rgb[kb].iter().any(|v| *v >= frames[j].clip * 0.95) {
-                            continue;
-                        }
-                        cnt += 1;
-                        sum += lum(pa);
+                    let (Some(&wa), Some(&wb), Some(&pa), Some(&pb)) = (a.wgt.get(ka), b.wgt.get(kb), a.rgb.get(ka), b.rgb.get(kb)) else { continue };
+                    if wa > 0.0 && wb > 0.0 && pa.iter().all(|v| *v < frames[i].clip * 0.95) && pb.iter().all(|v| *v < frames[j].clip * 0.95) {
+                        v.push((lum(pa), lum(pb)));
                     }
                 }
             }
-            if cnt > 50 {
-                nij[i * n + j] = cnt as f64;
-                iij[i * n + j] = sum / cnt as f64;
-            }
-        }
-    }
-    let total: f64 = nij.iter().sum();
-    if total <= 0.0 {
-        return;
-    }
-    let mean = (0..n * n).map(|k| nij[k] * iij[k] * gains[k / n]).sum::<f64>() / total;
-    if mean <= 0.0 {
-        return;
-    }
-    let (sn, sg) = (0.1f64, 1.0f64);
-    let g0: Vec<f64> = gains.to_vec();
-    let mut a = vec![0f64; n * n];
-    let mut b = vec![0f64; n];
-    for i in 0..n {
-        if tiles[i].is_none() {
-            a[i * n + i] = 1.0;
-            b[i] = g0[i];
-            continue;
-        }
-        for j in 0..n {
-            let nn = nij[i * n + j];
-            if nn <= 0.0 || nij[j * n + i] <= 0.0 {
+            if v.len() < 50 * EXPOSURE_BINS {
                 continue;
             }
-            let (ii, ij) = (iij[i * n + j] / mean, iij[j * n + i] / mean);
-            // d/dgᵢ of Nᵢⱼ (gᵢ Iᵢⱼ − gⱼ Iⱼᵢ)²/σN² (both orderings of the pair are in the sum)
-            a[i * n + i] += 2.0 * nn * ii * ii / (sn * sn);
-            a[i * n + j] -= 2.0 * nn * ii * ij / (sn * sn);
-            a[i * n + i] += 2.0 * nn / (sg * sg * g0[i] * g0[i]);
-            b[i] += 2.0 * nn / (sg * sg * g0[i]);
-        }
-        if a[i * n + i] == 0.0 {
-            a[i * n + i] = 1.0;
-            b[i] = g0[i];
+            v.sort_by(|p, q| (p.0 + p.1).total_cmp(&(q.0 + q.1)));
+            let per = v.len() / EXPOSURE_BINS;
+            for bin in v.chunks(per).take(EXPOSURE_BINS) {
+                let k = bin.len() as f64;
+                let (sa, sb) = bin.iter().fold((0.0, 0.0), |(x, y), p| (x + p.0, y + p.1));
+                pairs.push((i, j, sa / k, sb / k, k));
+            }
         }
     }
-    if let Some(g) = linalg::solve(a, b, n)
-        && g.iter().all(|v| v.is_finite() && *v > 0.0)
-    {
-        gains.copy_from_slice(&g);
+    if std::env::var_os("LIGHTCRAFT_PROFILE").is_some() {
+        for &(i, j, a, b, w) in &pairs {
+            eprintln!("[profile] overlap {i}-{j}: levels {a:.5} / {b:.5} ({w:.0} px)");
+        }
     }
+    let total: f64 = pairs.iter().map(|p| p.4).sum();
+    let m = pairs.iter().map(|&(i, j, a, b, w)| w * (a * gains[i] + b * gains[j]) / 2.0).sum::<f64>() / total.max(1.0);
+    if pairs.is_empty() || !(m > 0.0 && m.is_finite()) {
+        return none;
+    }
+    // unknowns: g₀…gₙ₋₁, o₀…oₙ₋₁ (offsets in units of m)
+    let (sn, sg, so) = (0.1f64, 1.0f64, 0.2f64);
+    let dim = 2 * n;
+    let g0: Vec<f64> = gains.to_vec();
+    let mut ata = vec![0f64; dim * dim];
+    let mut atb = vec![0f64; dim];
+    let mut add = |coef: &[(usize, f64)], rhs: f64, w: f64| {
+        for &(r, cr) in coef {
+            for &(c, cc) in coef {
+                ata[r * dim + c] += w * cr * cc;
+            }
+            atb[r] += w * cr * rhs;
+        }
+    };
+    let mut seen = vec![0f64; n];
+    for &(i, j, a, b, w) in &pairs {
+        add(&[(i, a / m), (n + i, -1.0), (j, -b / m), (n + j, 1.0)], 0.0, w / (sn * sn));
+        seen[i] += w;
+        seen[j] += w;
+    }
+    for i in 0..n {
+        // images in no overlap keep their EXIF gain and no offset
+        let wp = if seen[i] > 0.0 { seen[i] } else { 1.0 };
+        let g = if g0[i] > 0.0 { g0[i] } else { 1.0 };
+        add(&[(i, 1.0 / (sg * g))], 1.0 / sg, wp);
+        add(&[(n + i, 1.0 / so)], 0.0, wp);
+    }
+    let Some(x) = linalg::solve(ata, atb, dim) else { return none };
+    let (g, o) = x.split_at(n);
+    if !g.iter().zip(&seen).all(|(v, s)| v.is_finite() && (*v > 0.0 || *s == 0.0)) || !o.iter().all(|v| v.is_finite()) {
+        return none;
+    }
+    gains.copy_from_slice(g);
+    // relative to the frame with the least flare, in output units
+    let least = o.iter().zip(&seen).filter(|(_, s)| **s > 0.0).map(|(v, _)| *v).fold(f64::INFINITY, f64::min);
+    let least = if least.is_finite() { least } else { 0.0 };
+    o.iter().zip(&seen).map(|(v, s)| if *s > 0.0 { ((v - least) * m).max(0.0) } else { 0.0 }).collect()
 }
