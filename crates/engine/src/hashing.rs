@@ -11,7 +11,9 @@
 //!
 //! The hash is also what caches are keyed by ([`crate::media::content_key`]: before it, the file's
 //! path and size). Caches simply miss once; a smart preview made before it is moved to its new
-//! name, so it is not built again or left behind.
+//! name, so it is not built again or left behind. The move waits until the session records the
+//! hash ([`Session::learn_content_hash`]): a result that no longer applies (Add to My Photos undone
+//! meanwhile) leaves the preview where the photo's current key finds it.
 
 use std::path::PathBuf;
 
@@ -35,6 +37,8 @@ pub struct HashDone {
     path: String,
     file_size: u64,
     hash: String,
+    /// A smart preview under the queued key (from, to): moved once the hash is recorded.
+    smart_move: Option<(PathBuf, PathBuf)>,
 }
 
 /// The content hash of the file at `path`, as an import works it out; `None` when it can't be read.
@@ -43,8 +47,9 @@ pub fn file_hash(path: &str) -> Option<String> {
 }
 
 impl HashJob {
-    /// Read and hash the file, and move a smart preview made under the old key to the new one.
-    /// `None` when the file can't be read or isn't the one queued any more (another size).
+    /// Read and hash the file, and find a smart preview made under the old key (it moves to the new
+    /// one when the session records the hash). `None` when the file can't be read or isn't the one
+    /// queued any more (another size).
     pub fn run(&self) -> Option<HashDone> {
         let Source::File { path } = &self.photo.source else { return None };
         let len = std::fs::metadata(path).ok()?.len();
@@ -53,17 +58,28 @@ impl HashJob {
         }
         let _permit = crate::memory::work_gate().acquire(usize::try_from(len).unwrap_or(usize::MAX));
         let hash = file_hash(path)?;
-        if let Some(dir) = &self.smart_dir {
+        // Only looked up here, off the UI thread: the photo keeps its old key until the hash is recorded.
+        let smart_move = self.smart_dir.as_ref().and_then(|dir| {
             let old = crate::smart::file_path(dir, &self.photo);
             let new = crate::smart::sharded_file_path(dir, &Photo { content_hash: Some(hash.clone()), ..self.photo.clone() });
-            if old != new && old.is_file() && !new.exists() {
-                let moved = new.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::rename(&old, &new));
-                if let Err(e) = moved {
-                    log::warn!("smart preview of {path}: not renamed after its content hash: {e}");
-                }
-            }
+            (old != new && old.is_file() && !new.exists()).then_some((old, new))
+        });
+        Some(HashDone { id: self.id, path: path.clone(), file_size: len, hash, smart_move })
+    }
+}
+
+/// Move a smart preview to the name the photo's recorded hash gives it (one rename in the cache
+/// folder); a preview gone or replaced meanwhile is left alone.
+fn move_smart_preview(old: &std::path::Path, new: &std::path::Path) {
+    if new.exists() {
+        return;
+    }
+    let moved = new.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::rename(old, new));
+    match moved {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            log::warn!("smart preview {}: not renamed after its content hash: {e}", old.display());
         }
-        Some(HashDone { id: self.id, path: path.clone(), file_size: len, hash })
+        _ => {}
     }
 }
 
@@ -99,7 +115,8 @@ impl Session {
     }
 
     /// Record a worked-out hash when the photo is still the one it was worked out for (same file, same
-    /// size, no hash yet): journaled, not an undo step. Whether it was recorded.
+    /// size, no hash yet): journaled, not an undo step. A smart preview made under the old key moves
+    /// to the new one only then. Whether it was recorded.
     pub fn learn_content_hash(&mut self, done: HashDone) -> bool {
         let Some(p) = self.catalog.photo(done.id) else { return false };
         let same = matches!(&p.source, Source::File { path } if *path == done.path) && p.file_size == done.file_size;
@@ -116,7 +133,12 @@ impl Session {
             preview_checked: p.preview_checked.clone(),
         };
         match self.apply_system(op) {
-            Ok(()) => true,
+            Ok(()) => {
+                if let Some((old, new)) = &done.smart_move {
+                    move_smart_preview(old, new);
+                }
+                true
+            }
             Err(e) => {
                 log::warn!("photo {}: content hash not recorded: {e}", done.id.0);
                 false
