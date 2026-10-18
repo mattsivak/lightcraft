@@ -2,8 +2,6 @@
 //! browsing a folder doesn't read whole files, so their hashes are worked out once they are added,
 //! on a worker thread, and recorded back here unless another library was opened meanwhile.
 
-use lightcraft_engine::hashing::HashJob;
-
 use crate::LightcraftApp;
 
 /// The activity stack's label while the files are read.
@@ -19,7 +17,20 @@ pub fn tick(app: &mut LightcraftApp) {
     if jobs.is_empty() {
         return;
     }
-    let work = move || jobs.iter().filter_map(HashJob::run).collect::<Vec<_>>();
+    // The row counts the photos; no ✕: the queue lives only in memory, so a stopped batch's photos
+    // would never get their hash. The worker owns the row, so it goes however the worker ends.
+    let row = app.session.activity.start("hash", LABEL, lightcraft_engine::activity::Cancel::No);
+    let total = u64::try_from(jobs.len()).unwrap_or(u64::MAX);
+    row.progress(0, total);
+    let work = move || {
+        let row = row;
+        let mut out = Vec::with_capacity(jobs.len());
+        for (i, job) in (1u64..).zip(jobs.iter()) {
+            out.extend(job.run());
+            row.progress(i, total);
+        }
+        out
+    };
     let done = move |app: &mut LightcraftApp, _: &egui::Context, results: Vec<lightcraft_engine::hashing::HashDone>| {
         if app.session.library_generation() != library {
             return;
@@ -28,7 +39,7 @@ pub fn tick(app: &mut LightcraftApp) {
             app.session.learn_content_hash(d);
         }
     };
-    if let Err(e) = crate::tasks::spawn(app, LABEL, Some("hash"), work, done) {
+    if let Err(e) = crate::tasks::spawn(app, LABEL, None, work, done) {
         log::warn!("{e}");
     }
 }
@@ -71,8 +82,11 @@ mod tests {
         app.run("photo.addToLibrary", json!({"ids": [p.id.0]})).unwrap();
         assert!(app.session.catalog.photo(p.id).unwrap().content_hash.is_none(), "not on the UI thread");
         super::tick(&mut app);
-        let rows = app.session.activity.list();
-        assert!(rows.iter().any(|r| r.kind == "hash" && r.label == super::LABEL), "{rows:?}");
+        let rows: Vec<_> = app.session.activity.list().into_iter().filter(|r| r.kind == "hash").collect();
+        assert_eq!(rows.len(), 1, "one row, not one per layer: {rows:?}");
+        assert_eq!(rows[0].label, super::LABEL);
+        assert_eq!(rows[0].total, 1, "the row counts the photos: {rows:?}");
+        assert!(!rows[0].cancellable, "no ✕: a stopped batch would never be hashed");
         assert!(crate::tasks::wait(&mut app, &ctx, Duration::from_secs(10)));
         assert_eq!(app.session.catalog.photo(p.id).unwrap().content_hash, lightcraft_engine::hashing::file_hash(&file.to_string_lossy()));
         assert!(app.session.activity.list().iter().all(|r| r.kind != "hash"), "the row goes with the task");
