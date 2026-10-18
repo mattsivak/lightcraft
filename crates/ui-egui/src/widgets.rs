@@ -264,7 +264,7 @@ fn pointer_cover_key() -> egui::Id {
 }
 
 /// Say that `rect` is drawn over scrolled rows this frame (a pinned header): rows beneath it
-/// don't take the pointer (hover, arrow keys, the wheel) on the next frame.
+/// don't take the pointer (hover, arrow keys, the wheel, sideways scrolling) on the next frame.
 pub fn cover_pointer(ctx: &egui::Context, rect: Rect) {
     let frame = ctx.cumulative_frame_nr();
     ctx.data_mut(|d| d.insert_temp(pointer_cover_key(), (frame, rect)));
@@ -530,9 +530,10 @@ pub fn slider_changed(ui: &mut Ui, spec: &ControlSpec, value: f64, enabled: bool
         // the pointer, selected or not: the panel only scrolls vertically, so nothing else wants it.
         // Only a mostly sideways movement counts, so a slightly diagonal swipe that scrolls the panel
         // leaves the sliders it passes alone. Right raises the value, as dragging the thumb right does.
+        // A slider beneath the pinned section header ([`cover_pointer`]) is out of reach.
         let side_id = id.with("side-rem");
         let (dx, dy) = ui.input(|i| (i.smooth_scroll_delta.x, i.smooth_scroll_delta.y));
-        if !enabled || typing.is_some() || out.value.is_some() || !ui.rect_contains_pointer(row) || dx.abs() <= dy.abs() {
+        if !enabled || typing.is_some() || out.value.is_some() || !pointer_on(ui, row) || dx.abs() <= dy.abs() {
             ui.data_mut(|m| m.remove::<f32>(side_id));
         } else {
             // the vertical part would scroll the panel and move the slider out from under the pointer
@@ -1004,6 +1005,55 @@ mod tests {
         let lo = temp.value_at(temp.position(7000.0) + f64::from(moves - 10) / f64::from(track.width()) * 0.1);
         let hi = temp.value_at(temp.position(7000.0) + f64::from(moves) / f64::from(track.width()) * 0.1);
         assert!(value >= lo - 50.0 && value <= hi + 50.0 && value > 7000.0, "{value} K, expected {lo:.0}–{hi:.0} K");
+    }
+
+    /// A sideways swipe over the Edit panel's pinned section header leaves the slider scrolled
+    /// beneath it alone and passes the scroll on (review of #1554), as the wheel and arrow keys
+    /// do; over an uncovered slider the same swipe nudges it and is used up.
+    #[test]
+    fn a_sideways_swipe_only_reaches_an_uncovered_slider() {
+        let swipe = |covered: bool| {
+            let ctx = egui::Context::default();
+            let exposure = lightcraft_develop::controls::find("light.exposure").unwrap();
+            let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(320.0, 120.0));
+            let mut value = 0.0;
+            let mut left = egui::Vec2::ZERO;
+            let mut track = Rect::NOTHING;
+            for i in 0..30 {
+                let mut events = Vec::new();
+                if i == 1 {
+                    events.push(egui::Event::PointerMoved(track.center()));
+                }
+                if i == 2 {
+                    let (unit, delta, phase, modifiers) =
+                        (egui::MouseWheelUnit::Point, vec2(120.0, 0.0), egui::TouchPhase::Move, egui::Modifiers::NONE);
+                    events.push(egui::Event::MouseWheel { unit, delta, phase, modifiers });
+                }
+                let input = egui::RawInput { screen_rect: Some(screen), time: Some(f64::from(i) / 60.0), events, ..Default::default() };
+                ctx.run_ui(input, |ui| {
+                    if covered {
+                        // the pinned header, drawn over the row the slider has scrolled to
+                        cover_pointer(ui.ctx(), screen);
+                    }
+                    if let Some(v) = slider(ui, exposure, value, true, None).value {
+                        value = v;
+                    }
+                    left += ui.input(|i| i.smooth_scroll_delta);
+                })
+                .textures_delta
+                .clear();
+                if let Some((_, r)) = take_registry(&ctx).into_iter().find(|(id, _)| id == "slider:light.exposure") {
+                    track = r;
+                }
+            }
+            (value, left)
+        };
+        let (value, left) = swipe(true);
+        assert_eq!(value, 0.0, "the hidden slider kept its value");
+        assert!(left.x > 100.0, "the swipe was not used up: {left:?}");
+        let (value, left) = swipe(false);
+        assert!(value > 0.0, "an uncovered slider takes the swipe");
+        assert_eq!(left, egui::Vec2::ZERO, "and uses it up");
     }
 
     /// Typed values (issue #322): signs, a decimal comma, units; on the control's steps, in range.
