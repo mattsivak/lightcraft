@@ -97,7 +97,7 @@ fn pinned_header(app: &mut LightcraftApp, ui: &mut egui::Ui, sections: &[PlacedS
     let hit = r.intersect(viewport);
     let resp = ui.interact(hit, egui::Id::new(("pinnedSection", s.id)), Sense::click());
     register(ui.ctx(), format!("sectionPinned:{}", s.id), hit);
-    crate::widgets::cover_pointer(ui.ctx(), hit);
+    crate::widgets::cover_pointer(ui, hit);
     let title = crate::i18n::tr(s.title);
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, true, true, title));
     crate::widgets::paint_section_header(ui, &painter, r, title, true, s.edited, resp.hovered());

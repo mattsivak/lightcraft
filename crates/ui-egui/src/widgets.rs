@@ -265,20 +265,23 @@ fn pointer_cover_key() -> egui::Id {
 
 /// Say that `rect` is drawn over scrolled rows this frame (a pinned header): rows beneath it
 /// don't take the pointer (hover, arrow keys, the wheel, sideways scrolling) on the next frame.
-pub fn cover_pointer(ctx: &egui::Context, rect: Rect) {
-    let frame = ctx.cumulative_frame_nr();
-    ctx.data_mut(|d| d.insert_temp(pointer_cover_key(), (frame, rect)));
+/// Only rows in `ui`'s layer are covered: a dialog drawn above the panel keeps the pointer.
+pub fn cover_pointer(ui: &Ui, rect: Rect) {
+    let frame = ui.ctx().cumulative_frame_nr();
+    let layer = ui.layer_id();
+    ui.ctx().data_mut(|d| d.insert_temp(pointer_cover_key(), (frame, layer, rect)));
 }
 
-/// Is the pointer on `rect` and not under something drawn over it ([`cover_pointer`], last
-/// frame or this one)?
+/// Is the pointer on `rect` and not under something drawn over it in the same layer
+/// ([`cover_pointer`], last frame or this one)?
 pub fn pointer_on(ui: &Ui, rect: Rect) -> bool {
     if !ui.rect_contains_pointer(rect) {
         return false;
     }
     let now = ui.ctx().cumulative_frame_nr();
-    let cover = ui.ctx().data(|d| d.get_temp::<(u64, Rect)>(pointer_cover_key()));
-    let covered = cover.is_some_and(|(frame, r)| frame + 1 >= now && ui.ctx().pointer_latest_pos().is_some_and(|p| r.contains(p)));
+    let cover = ui.ctx().data(|d| d.get_temp::<(u64, egui::LayerId, Rect)>(pointer_cover_key()));
+    let covered = cover
+        .is_some_and(|(frame, layer, r)| frame + 1 >= now && layer == ui.layer_id() && ui.ctx().pointer_latest_pos().is_some_and(|p| r.contains(p)));
     !covered
 }
 
@@ -1012,7 +1015,35 @@ mod tests {
     /// do; over an uncovered slider the same swipe nudges it and is used up.
     #[test]
     fn a_sideways_swipe_only_reaches_an_uncovered_slider() {
-        let swipe = |covered: bool| {
+        let (value, left) = swipe_over_slider(Cover::SameLayer);
+        assert_eq!(value, 0.0, "the hidden slider kept its value");
+        assert!(left.x > 100.0, "the swipe was not used up: {left:?}");
+        let (value, left) = swipe_over_slider(Cover::None);
+        assert!(value > 0.0, "an uncovered slider takes the swipe");
+        assert_eq!(left, egui::Vec2::ZERO, "and uses it up");
+    }
+
+    /// The pinned header covers only the rows of its own layer (review of #1554): a slider in a
+    /// dialog drawn above the Edit panel, under the header's rectangle, still takes a swipe.
+    #[test]
+    fn the_pinned_header_does_not_cover_a_dialog_above_it() {
+        let (value, left) = swipe_over_slider(Cover::LowerLayer);
+        assert!(value > 0.0, "the dialog's slider takes the swipe");
+        assert_eq!(left, egui::Vec2::ZERO, "and uses it up");
+    }
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Cover {
+        None,
+        /// The header and the slider are in the same layer (the Edit panel's scroll area).
+        SameLayer,
+        /// The header is in the background layer, the slider in a foreground area over it.
+        LowerLayer,
+    }
+
+    /// Swipe sideways over the Exposure slider; returns its value and the scroll left unused.
+    fn swipe_over_slider(cover: Cover) -> (f64, egui::Vec2) {
+        {
             let ctx = egui::Context::default();
             let exposure = lightcraft_develop::controls::find("light.exposure").unwrap();
             let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(320.0, 120.0));
@@ -1031,11 +1062,18 @@ mod tests {
                 }
                 let input = egui::RawInput { screen_rect: Some(screen), time: Some(f64::from(i) / 60.0), events, ..Default::default() };
                 ctx.run_ui(input, |ui| {
-                    if covered {
+                    if cover != Cover::None {
                         // the pinned header, drawn over the row the slider has scrolled to
-                        cover_pointer(ui.ctx(), screen);
+                        cover_pointer(ui, screen);
                     }
-                    if let Some(v) = slider(ui, exposure, value, true, None).value {
+                    if cover == Cover::LowerLayer {
+                        egui::Area::new(egui::Id::new("dialog")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ui.ctx(), |ui| {
+                            ui.set_width(screen.width());
+                            if let Some(v) = slider(ui, exposure, value, true, None).value {
+                                value = v;
+                            }
+                        });
+                    } else if let Some(v) = slider(ui, exposure, value, true, None).value {
                         value = v;
                     }
                     left += ui.input(|i| i.smooth_scroll_delta);
@@ -1047,13 +1085,7 @@ mod tests {
                 }
             }
             (value, left)
-        };
-        let (value, left) = swipe(true);
-        assert_eq!(value, 0.0, "the hidden slider kept its value");
-        assert!(left.x > 100.0, "the swipe was not used up: {left:?}");
-        let (value, left) = swipe(false);
-        assert!(value > 0.0, "an uncovered slider takes the swipe");
-        assert_eq!(left, egui::Vec2::ZERO, "and uses it up");
+        }
     }
 
     /// Typed values (issue #322): signs, a decimal comma, units; on the control's steps, in range.
