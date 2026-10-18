@@ -17,6 +17,8 @@ pub fn tick(app: &mut LightcraftApp) {
     if jobs.is_empty() {
         return;
     }
+    // Kept to put them back in the queue if the worker can't start (the queue is now empty).
+    let ids: Vec<_> = jobs.iter().map(|j| j.id).collect();
     // The row counts the photos; no ✕: the queue lives only in memory, so a stopped batch's photos
     // would never get their hash. The worker owns the row, so it goes however the worker ends.
     let row = app.session.activity.start("hash", LABEL, lightcraft_engine::activity::Cancel::No);
@@ -39,8 +41,11 @@ pub fn tick(app: &mut LightcraftApp) {
             app.session.learn_content_hash(d);
         }
     };
+    // On failure the worker closure, and the row with it, is dropped unrun; the photos go back in
+    // the queue for a later frame instead of never getting their hash.
     if let Err(e) = crate::tasks::spawn(app, LABEL, None, work, done) {
         log::warn!("{e}");
+        app.session.queue_hash(ids);
     }
 }
 
@@ -53,11 +58,10 @@ mod tests {
 
     use crate::LightcraftApp;
 
-    /// Add to My Photos on a browsed photo without a hash (as browsing leaves a raw): the hash is
-    /// worked out on a worker thread, shown in the activity stack meanwhile, and recorded.
-    #[test]
-    fn added_photos_get_their_content_hash_in_the_background() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-hashing-{}", std::process::id()));
+    /// A browsed photo without a hash (as browsing leaves a raw), in a folder of its own, added to
+    /// My Photos: the app, the photo, its file and the folder.
+    fn added_unhashed_photo(tag: &str) -> (LightcraftApp, lightcraft_catalog::PhotoId, std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("lc-ui-hashing-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let img = lightcraft_raster::Rgba8::from_fn(16, 12, |x, y| [(x * 9) as u8, (y * 11) as u8, 40, 255]);
@@ -78,9 +82,17 @@ mod tests {
         };
         session.catalog.apply(unhashed).unwrap();
         let mut app = LightcraftApp::new(session, Default::default());
-        let ctx = egui::Context::default();
         app.run("photo.addToLibrary", json!({"ids": [p.id.0]})).unwrap();
-        assert!(app.session.catalog.photo(p.id).unwrap().content_hash.is_none(), "not on the UI thread");
+        (app, p.id, file, dir)
+    }
+
+    /// Add to My Photos on a browsed photo without a hash: the hash is worked out on a worker
+    /// thread, shown in the activity stack meanwhile, and recorded.
+    #[test]
+    fn added_photos_get_their_content_hash_in_the_background() {
+        let (mut app, id, file, dir) = added_unhashed_photo("bg");
+        let ctx = egui::Context::default();
+        assert!(app.session.catalog.photo(id).unwrap().content_hash.is_none(), "not on the UI thread");
         super::tick(&mut app);
         let rows: Vec<_> = app.session.activity.list().into_iter().filter(|r| r.kind == "hash").collect();
         assert_eq!(rows.len(), 1, "one row, not one per layer: {rows:?}");
@@ -88,8 +100,26 @@ mod tests {
         assert_eq!(rows[0].total, 1, "the row counts the photos: {rows:?}");
         assert!(!rows[0].cancellable, "no ✕: a stopped batch would never be hashed");
         assert!(crate::tasks::wait(&mut app, &ctx, Duration::from_secs(10)));
-        assert_eq!(app.session.catalog.photo(p.id).unwrap().content_hash, lightcraft_engine::hashing::file_hash(&file.to_string_lossy()));
+        assert_eq!(app.session.catalog.photo(id).unwrap().content_hash, lightcraft_engine::hashing::file_hash(&file.to_string_lossy()));
         assert!(app.session.activity.list().iter().all(|r| r.kind != "hash"), "the row goes with the task");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// When the worker thread can't be started, the photos go back in the queue (and their row
+    /// goes) instead of never getting their hash; a later tick hashes them.
+    #[test]
+    fn a_worker_that_cannot_start_leaves_the_photos_queued() {
+        let (mut app, id, file, dir) = added_unhashed_photo("nospawn");
+        let ctx = egui::Context::default();
+        crate::tasks::fail_next_spawn();
+        super::tick(&mut app);
+        assert!(app.session.hashes_queued(), "the photos are queued again");
+        assert!(!app.tasks.is_running(super::LABEL));
+        assert!(app.session.activity.list().iter().all(|r| r.kind != "hash"), "no row left behind");
+        super::tick(&mut app);
+        assert!(crate::tasks::wait(&mut app, &ctx, Duration::from_secs(10)));
+        assert_eq!(app.session.catalog.photo(id).unwrap().content_hash, lightcraft_engine::hashing::file_hash(&file.to_string_lossy()));
+        assert!(!app.session.hashes_queued());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
