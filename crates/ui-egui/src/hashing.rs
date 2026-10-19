@@ -105,6 +105,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Switching libraries waits for the added photos' hashes, queued or being worked out: their
+    /// results would be dropped (another library is open) and the queue isn't rebuilt on reopen.
+    #[test]
+    fn switching_libraries_waits_for_the_hashes() {
+        let (mut app, _id, _file, dir) = added_unhashed_photo("switch");
+        let ctx = egui::Context::default();
+        assert!(app.session.hashes_queued());
+        let err = crate::panels::settings::can_switch_library(&app).unwrap_err();
+        assert!(err.contains("checking added photos"), "{err}");
+        super::tick(&mut app);
+        assert!(crate::panels::settings::can_switch_library(&app).is_err(), "refused while the worker runs");
+        assert!(crate::tasks::wait(&mut app, &ctx, Duration::from_secs(10)));
+        assert!(crate::panels::settings::can_switch_library(&app).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// When the worker thread can't be started, the photos go back in the queue (and their row
     /// goes) instead of never getting their hash; a later tick hashes them.
     #[test]
